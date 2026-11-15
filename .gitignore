@@ -1,0 +1,5 @@
+node_modules
+dist
+# Ne jamais commiter de liste ODS (protégée par le droit d'auteur)
+*ods*.txt
+ods/

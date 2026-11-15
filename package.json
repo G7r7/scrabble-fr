@@ -1,0 +1,21 @@
+{
+  "name": "scrabble-fr",
+  "version": "1.0.0",
+  "description": "Scrabble en français contre l'ordinateur",
+  "scripts": {
+    "test": "vitest run",
+    "dict": "node scripts/build-dict.mjs",
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "license": "ISC",
+  "devDependencies": {
+    "an-array-of-french-words": "^2.0.0",
+    "typescript": "^7.0.2",
+    "vite": "^7.3.8",
+    "vitest": "^5.1.0"
+  },
+  "type": "module",
+  "private": "true"
+}
