@@ -74,12 +74,13 @@ h2 { font-size: 1.05rem; margin: 1.2rem 0 0.5rem; }
 
 /* ---------- En-tête ---------- */
 .top {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;
-  max-width: 1120px; margin: 0 auto; padding: 14px 16px 6px;
+  grid-area: head;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px 12px; flex-wrap: wrap;
 }
 .top h1 { font-size: 1.7rem; font-weight: 800; letter-spacing: -0.01em; }
 .top h1 em { font-style: normal; color: var(--accent); }
-.top-actions { display: flex; gap: 10px; align-items: center; }
+.top-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex: 1 1 auto; }
+.top-icons, .top-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .level { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 0.9rem; }
 select, input {
   font: inherit; color: var(--ink); background: var(--surface);
@@ -99,15 +100,57 @@ select, input {
 .btn.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent), black 10%); }
 .link { background: none; border: 0; padding: 0; color: var(--accent); cursor: pointer; font: inherit; text-decoration: underline; }
 
-/* ---------- Mise en page ---------- */
-.layout {
-  max-width: 1120px; margin: 0 auto; padding: 8px 16px 32px;
-  display: grid; grid-template-columns: minmax(0, 640px) minmax(260px, 1fr); gap: 28px; align-items: start;
+/* ---------- Mise en page ----------
+   Portrait : tout en colonne, le plateau prend toute la largeur.
+   Paysage : le plateau occupe toute la hauteur de l'écran, tout le reste
+   (scores, chevalet, actions, historique) tient dans une colonne à droite. */
+.app {
+  --gap: 16px;
+  --tsz: min(54px, calc((100vw - 2 * var(--gap) - 56px) / 7));
+  display: grid; gap: 10px var(--gap); padding: 10px var(--gap) 24px;
+  grid-template-columns: minmax(0, 760px); justify-content: center;
+  grid-template-areas: "head" "scores" "board" "preview" "rack" "actions" "status" "side";
 }
-@media (max-width: 860px) {
-  .layout { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+.app > * { min-width: 0; }
+.scorebox { grid-area: scores; }
+.board { grid-area: board; }
+.preview { grid-area: preview; }
+.rack { grid-area: rack; }
+.actions { grid-area: actions; }
+#status { grid-area: status; }
+.side { grid-area: side; }
+
+@media (max-aspect-ratio: 1/1), (max-width: 759px) {
+  .scores { grid-template-columns: 1fr 1fr; }
+  .scorebox .bag { text-align: center; margin-top: 6px; }
 }
-.play { min-width: 0; }
+
+@media (min-aspect-ratio: 1/1) and (min-width: 760px) {
+  .app {
+    --col: clamp(320px, 27vw, 430px);
+    --bs: min(calc(100dvh - 2 * 12px), calc(100vw - var(--col) - 3 * var(--gap)));
+    --tsz: min(54px, calc((var(--col) - 56px) / 7));
+    height: 100dvh; padding: 12px var(--gap);
+    grid-template-columns: var(--bs) var(--col);
+    grid-template-rows: auto auto auto auto auto auto minmax(0, 1fr);
+    grid-template-areas:
+      "board head" "board scores" "board preview" "board rack"
+      "board actions" "board status" "board side";
+    align-content: center;
+  }
+  .app .board { width: var(--bs); align-self: center; }
+  .app .side { min-height: 0; overflow: auto; }
+  .app .history { max-height: none; }
+  .app .top h1 { font-size: 1.5rem; }
+  .app .top-title { flex-basis: 100%; }
+  .app .preview { padding-top: 0; }
+  .app .actions { margin-top: 0; }
+  .app #status { margin: 0; }
+}
+@media (min-aspect-ratio: 1/1) and (min-width: 760px) and (max-height: 520px) {
+  .app { height: auto; min-height: 100dvh; }
+  .side { overflow: visible; }
+}
 
 /* ---------- Plateau ---------- */
 .board {
@@ -155,6 +198,7 @@ select, input {
 .tile.ghost {
   position: fixed; left: 0; top: 0; z-index: 50; pointer-events: none;
   font-size: 1.5rem; transform-origin: center; box-shadow: 0 10px 22px rgba(0, 0, 0, 0.35);
+  transition: width 0.12s, height 0.12s, font-size 0.12s; rotate: -3deg;
 }
 
 /* ---------- Aperçu, chevalet, actions ---------- */
@@ -168,18 +212,30 @@ select, input {
 .rack {
   display: flex; justify-content: center; gap: 6px; padding: 10px;
   background: color-mix(in srgb, var(--tile-edge), var(--bg) 55%); border-radius: var(--radius);
-  min-height: calc(min(13vw, 54px) + 20px);
+  min-height: calc(var(--tsz) + 20px);
+  box-shadow: inset 0 -4px 0 color-mix(in srgb, var(--tile-edge), black 25%);
 }
-.rack .tile { width: min(12vw, 54px); height: min(12vw, 54px); font-size: min(6.4vw, 1.75rem); }
+.rack .tile {
+  flex: none; width: var(--tsz); height: var(--tsz); font-size: calc(var(--tsz) * 0.52);
+  transition: translate 0.18s cubic-bezier(0.2, 0.8, 0.3, 1), transform 0.15s;
+}
+.rack .tile.dragging { opacity: 0; }
 .rack .tile.selected { transform: translateY(-6px); box-shadow: inset 0 -2px 0 var(--tile-edge), 0 0 0 3px var(--accent); }
 .rack.exchange .tile { cursor: pointer; }
 .rack .tile.marked { transform: translateY(-6px); background: color-mix(in srgb, var(--tile), var(--bad) 30%); }
-.rack-spacer { flex: 0 0 0; }
 
 .actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 12px; }
 #status { min-height: 1.4em; text-align: center; margin: 10px 0 0; font-size: 0.92rem; }
 
 /* ---------- Panneau latéral ---------- */
+.scorebox .bag { margin: 8px 2px 0; }
+.side h2:first-child { margin-top: 0; }
+.dict-box summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 6px; }
+.dict-box summary::-webkit-details-marker { display: none; }
+.dict-box summary::after { content: '▸'; color: var(--muted); transition: rotate 0.15s; }
+.dict-box[open] summary::after { rotate: 90deg; }
+.dict-box summary h2 { display: inline; }
+.dict-box .dict { padding-top: 4px; }
 .side {
   background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 16px;
 }
@@ -276,6 +332,7 @@ input.invalid { border-color: var(--bad); outline: 1px solid var(--bad); }
 .btn.icon[aria-pressed="true"] { color: var(--accent); }
 .btn.icon[aria-pressed="true"] .off, .btn.icon[aria-pressed="false"] .on { display: none; }
 .btn.icon[aria-pressed="false"] { color: var(--muted); }
+#fsBtn[aria-pressed="false"] { color: var(--ink); }
 
 /* ---------- Animations ---------- */
 .board .tile.pop { animation: tile-drop 0.32s cubic-bezier(0.3, 1.6, 0.5, 1) both; }

@@ -634,20 +634,20 @@ export class App {
 
   // ---------- Tuiles ----------
 
-  private async placeTile(id: number, r: number, c: number) {
-    if (!this.canAct() || this.exchangeMode) return;
-    if (this.game.board[r][c] || this.pending.some((p) => p.r === r && p.c === c)) return;
+  private async placeTile(id: number, r: number, c: number): Promise<boolean> {
+    if (!this.canAct() || this.exchangeMode) return false;
+    if (this.game.board[r][c] || this.pending.some((p) => p.r === r && p.c === c)) return false;
     const onBoard = this.pending.find((p) => p.id === id);
     if (onBoard) {
       onBoard.r = r; onBoard.c = c;
     } else {
       const i = this.tiles.findIndex((t) => t.id === id);
-      if (i < 0) return;
+      if (i < 0) return false;
       const t = this.tiles[i];
       let assigned = t.letter;
       if (t.letter === BLANK) {
         const chosen = await this.pickBlankLetter();
-        if (!chosen) return;
+        if (!chosen) return false;
         assigned = chosen;
       }
       this.tiles.splice(i, 1);
@@ -656,9 +656,11 @@ export class App {
     this.sound.place();
     this.selected = null;
     this.render();
+    return true;
   }
 
-  private returnTile(id: number, beforeId?: number) {
+  /** Remet une tuile sur le chevalet, intercalée à la position `at` (à la fin par défaut). */
+  private returnTile(id: number, at = -1) {
     this.sound.pickup();
     let tile: RackTile | undefined;
     const pi = this.pending.findIndex((p) => p.id === id);
@@ -670,8 +672,7 @@ export class App {
       if (ti < 0) return;
       tile = this.tiles.splice(ti, 1)[0];
     }
-    const at = beforeId === undefined ? -1 : this.tiles.findIndex((t) => t.id === beforeId);
-    if (at < 0) this.tiles.push(tile);
+    if (at < 0 || at >= this.tiles.length) this.tiles.push(tile);
     else this.tiles.splice(at, 0, tile);
     this.render();
   }
@@ -711,8 +712,8 @@ export class App {
     actions.addEventListener('click', (e) => {
       const a = (e.target as HTMLElement).closest<HTMLElement>('[data-action]')?.dataset.action;
       if (a === 'play') void this.play();
-      else if (a === 'recall') { this.recallAll(); this.render(); }
-      else if (a === 'shuffle') { shuffle(this.tiles); this.sound.shuffle(); this.render(); }
+      else if (a === 'recall') this.withFlip(() => { this.recallAll(); this.render(); });
+      else if (a === 'shuffle') this.withFlip(() => { shuffle(this.tiles); this.sound.shuffle(); this.render(); });
       else if (a === 'exchange') this.toggleExchange();
       else if (a === 'confirm-exchange') this.confirmExchange();
       else if (a === 'pass') this.doPass();
@@ -722,6 +723,20 @@ export class App {
     this.el.onlineBtn.addEventListener('click', () => this.lobby('menu'));
     this.el.sfxBtn.addEventListener('click', () => { this.sound.setSfx(!this.sound.sfxOn); this.renderSoundButtons(); this.sound.place(); });
     this.el.musicBtn.addEventListener('click', () => { this.sound.setMusic(!this.sound.musicOn); this.renderSoundButtons(); });
+    const fs = $(this.root, '#fsBtn');
+    if (document.fullscreenEnabled) {
+      fs.hidden = false;
+      fs.title = 'Plein écran';
+      fs.addEventListener('click', () => {
+        if (document.fullscreenElement) void document.exitFullscreen();
+        else void document.documentElement.requestFullscreen().catch(() => { /* refusé */ });
+      });
+      document.addEventListener('fullscreenchange', () => {
+        const on = !!document.fullscreenElement;
+        fs.setAttribute('aria-pressed', String(on));
+        fs.title = on ? 'Quitter le plein écran' : 'Plein écran';
+      });
+    }
     this.renderSoundButtons();
     this.bindLobby();
     $(this.root, '#endClose').addEventListener('click', () => $(this.root, '#endDialog').classList.remove('open'));
@@ -764,65 +779,171 @@ export class App {
   }
 
   private bindDrag() {
-    type Drag = { id: number; x: number; y: number; src: HTMLElement; ghost: HTMLElement | null; pointer: number };
+    /**
+     * Géométrie du chevalet relevée au début du glissement (sans décalage) : les autres lettres
+     * s'écartent ensuite par `translate` pour ouvrir une place là où la lettre tenue s'intercalera.
+     */
+    type RackGeom = { others: HTMLElement[]; orig: number[]; center: number; pitch: number; size: number };
+    type Drag = {
+      id: number; x: number; y: number; src: HTMLElement; ghost: HTMLElement | null; pointer: number;
+      fromRack: boolean; rack: RackGeom | null; slot: number | null; over: 'rack' | 'board' | null; cell: number;
+    };
     let drag: Drag | null = null;
+
+    const measureRack = (src: HTMLElement): RackGeom => {
+      const rack = this.el.rack;
+      const all = [...rack.querySelectorAll<HTMLElement>('.tile[data-id]')];
+      const rects = all.map((el) => el.getBoundingClientRect());
+      const rr = rack.getBoundingClientRect();
+      const gap = parseFloat(getComputedStyle(rack).columnGap) || 6;
+      const size = rects[0]?.width ?? Math.max(rr.height - 20, 36);
+      const center = rects.length ? (rects[0].left + rects[rects.length - 1].right) / 2 : rr.left + rr.width / 2;
+      const others = all.filter((el) => el !== src);
+      return {
+        others, orig: others.map((el) => { const r = el.getBoundingClientRect(); return r.left + r.width / 2; }),
+        center, pitch: size + gap, size,
+      };
+    };
+
+    /** Place les lettres du chevalet : une case vide à `slot`, ou resserrées si `slot` est nul. */
+    const layoutRack = (g: RackGeom, slot: number | null) => {
+      const n = g.others.length;
+      const m = slot === null ? n : n + 1;
+      const first = g.center - ((m - 1) * g.pitch) / 2;
+      g.others.forEach((el, j) => {
+        const s = slot === null || j < slot ? j : j + 1;
+        const dx = first + s * g.pitch - g.orig[j];
+        el.style.translate = Math.abs(dx) < 0.5 ? '' : `${dx}px 0`;
+      });
+    };
+
+    const rackZone = (x: number, y: number) => {
+      const r = this.el.rack.getBoundingClientRect();
+      return x > r.left - 24 && x < r.right + 24 && y > r.top - 36 && y < r.bottom + 28;
+    };
+
+    const sizeGhost = (d: Drag) => {
+      if (!d.ghost) return;
+      const cell = this.el.board.firstElementChild?.getBoundingClientRect().width ?? 40;
+      const s = d.over === 'rack' ? d.rack!.size : Math.max(cell * 1.08, 34);
+      d.ghost.style.width = d.ghost.style.height = `${s}px`;
+      d.ghost.style.fontSize = `${s * 0.52}px`;
+      d.ghost.dataset.size = String(s);
+    };
 
     this.root.addEventListener('pointerdown', (e) => {
       const tileEl = (e.target as HTMLElement).closest<HTMLElement>('.tile[data-id]');
       if (!tileEl || e.button > 0) return;
-      drag = { id: +tileEl.dataset.id!, x: e.clientX, y: e.clientY, src: tileEl, ghost: null, pointer: e.pointerId };
+      drag = {
+        id: +tileEl.dataset.id!, x: e.clientX, y: e.clientY, src: tileEl, ghost: null, pointer: e.pointerId,
+        fromRack: !!tileEl.closest('#rack'), rack: null, slot: null, over: null, cell: -1,
+      };
       tileEl.setPointerCapture(e.pointerId);
     });
 
     this.root.addEventListener('pointermove', (e) => {
       if (!drag || e.pointerId !== drag.pointer) return;
-      if (!drag.ghost) {
-        if (Math.hypot(e.clientX - drag.x, e.clientY - drag.y) < 6) return;
-        if (!this.canAct() || this.exchangeMode) return;
-        const r = drag.src.getBoundingClientRect();
-        const size = Math.max(r.width, 40);
-        drag.ghost = drag.src.cloneNode(true) as HTMLElement;
-        drag.ghost.classList.add('ghost');
-        drag.ghost.style.width = drag.ghost.style.height = `${size}px`;
-        document.body.appendChild(drag.ghost);
-        drag.src.classList.add('dragging');
+      const d = drag;
+      if (!d.ghost) {
+        if (Math.hypot(e.clientX - d.x, e.clientY - d.y) < 6) return;
+        // Ranger son chevalet reste possible pendant le tour de l'adversaire.
+        if (this.exchangeMode || (!d.fromRack && !this.canAct())) return;
+        d.rack = measureRack(d.src);
+        d.ghost = d.src.cloneNode(true) as HTMLElement;
+        d.ghost.classList.remove('selected', 'pop', 'dragging');
+        d.ghost.classList.add('ghost');
+        d.ghost.style.translate = '';
+        document.body.appendChild(d.ghost);
+        d.src.classList.add('dragging');
+        if (d.fromRack) d.slot = d.rack.others.length + 1; // force la première mise en place
       }
-      const s = drag.ghost.offsetWidth;
-      drag.ghost.style.transform = `translate(${e.clientX - s / 2}px, ${e.clientY - s * 0.9}px)`;
-      this.highlightDrop(e.clientX, e.clientY);
+      const over = rackZone(e.clientX, e.clientY) ? 'rack' : 'board';
+      if (over !== d.over) { d.over = over; sizeGhost(d); }
+      const g = d.rack!;
+      let slot: number | null = null;
+      if (over === 'rack') {
+        const n = g.others.length;
+        const first = g.center - (n * g.pitch) / 2;
+        slot = Math.max(0, Math.min(n, Math.round((e.clientX - first) / g.pitch)));
+      }
+      if (slot !== d.slot) {
+        if (slot !== null && d.slot !== null && d.slot <= g.others.length) this.sound.slide();
+        d.slot = slot;
+        layoutRack(g, slot);
+      }
+      const s = +(d.ghost.dataset.size ?? d.ghost.offsetWidth);
+      d.ghost.style.transform = `translate(${e.clientX - s / 2}px, ${e.clientY - s * 0.9}px)`;
+      this.highlightDrop(over === 'board' ? e.clientX : -1, e.clientY);
     });
 
-    const end = (e: PointerEvent, cancelled = false) => {
+    const end = async (e: PointerEvent, cancelled = false) => {
       if (!drag || e.pointerId !== drag.pointer) return;
       const d = drag;
       drag = null;
       this.highlightDrop(-1, -1);
       if (!d.ghost) {
-        if (!cancelled) this.onTileClick(d.id);
+        if (!cancelled) this.withFlip(() => this.onTileClick(d.id));
         return;
       }
+      const prev = this.tileRects();
+      prev.set(d.id, d.ghost.getBoundingClientRect());
       d.ghost.remove();
       d.src.classList.remove('dragging');
-      if (cancelled) return this.render();
-      const target = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
-      const cell = target?.closest<HTMLElement>('.cell');
-      if (cell) return void this.placeTile(d.id, +cell.dataset.r!, +cell.dataset.c!);
-      if (target?.closest('#rack')) {
-        const before = target.closest<HTMLElement>('#rack .tile[data-id]');
-        const beforeId = before ? +before.dataset.id! : undefined;
-        return this.returnTile(d.id, beforeId === d.id ? undefined : beforeId);
-      }
-      this.render();
+      if (cancelled) return this.flipFrom(prev, () => this.render());
+      if (d.slot !== null) return this.flipFrom(prev, () => this.returnTile(d.id, d.slot!));
+      const cell = (document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null)?.closest<HTMLElement>('.cell');
+      if (cell && (await this.flipFromAsync(prev, () => this.placeTile(d.id, +cell.dataset.r!, +cell.dataset.c!)))) return;
+      this.flipFrom(prev, () => this.render());
     };
-    this.root.addEventListener('pointerup', (e) => end(e));
-    this.root.addEventListener('pointercancel', (e) => end(e, true));
+    this.root.addEventListener('pointerup', (e) => void end(e));
+    this.root.addEventListener('pointercancel', (e) => void end(e, true));
 
     this.el.board.addEventListener('click', (e) => {
       const cell = (e.target as HTMLElement).closest<HTMLElement>('.cell');
       if (!cell || cell.querySelector('.tile')) return;
-      if (this.selected !== null) void this.placeTile(this.selected, +cell.dataset.r!, +cell.dataset.c!);
+      const id = this.selected;
+      if (id !== null) void this.withFlipAsync(() => this.placeTile(id, +cell.dataset.r!, +cell.dataset.c!));
     });
   }
+
+  // ---------- Animations des tuiles (FLIP) ----------
+
+  /** Positions à l'écran de toutes les tuiles déplaçables, par identifiant. */
+  private tileRects() {
+    const m = new Map<number, DOMRect>();
+    for (const el of this.root.querySelectorAll<HTMLElement>('#rack .tile[data-id], #board .tile[data-id]')) {
+      m.set(+el.dataset.id!, el.getBoundingClientRect());
+    }
+    return m;
+  }
+
+  /** Fait glisser chaque tuile de son ancienne position vers la nouvelle après un rendu. */
+  private animateTiles(prev: Map<number, DOMRect>) {
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    for (const el of this.root.querySelectorAll<HTMLElement>('#rack .tile[data-id], #board .tile[data-id]')) {
+      const a = prev.get(+el.dataset.id!);
+      if (!a) continue;
+      const b = el.getBoundingClientRect();
+      if (!b.width) continue;
+      const dx = a.left + a.width / 2 - (b.left + b.width / 2);
+      const dy = a.top + a.height / 2 - (b.top + b.height / 2);
+      const k = a.width / b.width;
+      if (Math.abs(dx) < 1 && Math.abs(dy) < 1 && Math.abs(k - 1) < 0.02) continue;
+      el.animate(
+        [{ translate: `${dx}px ${dy}px`, scale: `${k}`, zIndex: 5 }, { translate: '0 0', scale: '1', zIndex: 5 }],
+        { duration: 200, easing: 'cubic-bezier(0.2, 0.9, 0.3, 1.15)' },
+      );
+    }
+  }
+
+  private flipFrom(prev: Map<number, DOMRect>, fn: () => void) { fn(); this.animateTiles(prev); }
+  private async flipFromAsync<T>(prev: Map<number, DOMRect>, fn: () => Promise<T>) {
+    const res = await fn();
+    this.animateTiles(prev);
+    return res;
+  }
+  private withFlip(fn: () => void) { this.flipFrom(this.tileRects(), fn); }
+  private withFlipAsync<T>(fn: () => Promise<T>) { return this.flipFromAsync(this.tileRects(), fn); }
 
   private highlightDrop(x: number, y: number) {
     this.el.board.querySelector('.drop')?.classList.remove('drop');
@@ -885,7 +1006,7 @@ export class App {
     this.el.rack.innerHTML = this.tiles
       .map((t) => this.tileHtml(t.letter, t.letter === BLANK,
         [t.id === this.selected ? 'selected' : '', this.exchangeSel.has(t.id) ? 'marked' : ''].join(' '), t.id))
-      .join('') + '<div class="rack-spacer"></div>';
+      .join('');
     this.el.rack.classList.toggle('exchange', this.exchangeMode);
 
     const solo = this.mode === 'solo';
@@ -989,12 +1110,18 @@ export class App {
 }
 
 const TEMPLATE = `
+<main class="app">
 <header class="top">
+  <div class="top-title">
   <h1>Scrabble <em>FR</em></h1>
-  <div class="top-actions">
+  <div class="top-icons">
     <span id="onlineInfo" class="online-info" hidden></span>
     <button class="btn icon" id="sfxBtn" aria-label="Sons"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4z"/><path class="on" d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12"/><path class="off" d="M16 9l6 6M22 9l-6 6"/></svg></button>
     <button class="btn icon" id="musicBtn" aria-label="Musique"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V6l11-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16" r="2.5"/><path class="off" d="M3 3l18 18"/></svg></button>
+    <button class="btn icon" id="fsBtn" aria-label="Plein écran" aria-pressed="false" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path class="off" d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/><path class="on" d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg></button>
+  </div>
+  </div>
+  <div class="top-actions">
     <label class="level" id="levelWrap">Niveau
       <select id="level">
         <option value="facile">Facile</option>
@@ -1006,21 +1133,21 @@ const TEMPLATE = `
     <button class="btn" id="newGame">Nouvelle partie</button>
   </div>
 </header>
-<main class="layout">
-  <section class="play">
-    <div id="board" class="board" aria-label="Plateau"></div>
-    <div id="preview" class="preview" aria-live="polite"></div>
-    <div id="rack" class="rack" aria-label="Chevalet"></div>
-    <div id="actions" class="actions"></div>
-    <p id="status" aria-live="polite"></p>
-  </section>
-  <aside class="side">
-    <div id="scores" class="scores"></div>
-    <p id="bag" class="bag"></p>
-    <h2>Historique</h2>
-    <ol id="history" class="history"></ol>
+<section class="scorebox">
+  <div id="scores" class="scores"></div>
+  <p id="bag" class="bag"></p>
+</section>
+<div id="board" class="board" aria-label="Plateau"></div>
+<div id="preview" class="preview" aria-live="polite"></div>
+<div id="rack" class="rack" aria-label="Chevalet"></div>
+<div id="actions" class="actions"></div>
+<p id="status" aria-live="polite"></p>
+<aside class="side">
+  <h2>Historique</h2>
+  <ol id="history" class="history"></ol>
+  <details class="dict-box">
+    <summary><h2>Dictionnaire</h2></summary>
     <form id="dict" class="dict">
-      <h2>Dictionnaire</h2>
       <div id="dictHead" class="dict-head"></div>
       <label class="btn file">Importer mon fichier ODS…<input type="file" accept=".txt,.csv,text/plain" hidden /></label>
       <p class="note">L’ODS de la Fédération est protégé par le droit d’auteur et n’est donc pas fourni.
@@ -1031,7 +1158,8 @@ const TEMPLATE = `
       </div>
       <p id="checkResult"></p>
     </form>
-  </aside>
+  </details>
+</aside>
 </main>
 <div id="loading" class="overlay open"><div class="card"><div class="spinner"></div><p>Chargement du dictionnaire…</p></div></div>
 <div id="blankDialog" class="overlay"><div class="card">

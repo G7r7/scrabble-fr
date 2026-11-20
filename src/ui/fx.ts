@@ -101,6 +101,8 @@ export class Sound {
 
   place() { const t = this.now(); if (t !== null) this.clack(t, 1); }
   pickup() { const t = this.now(); if (t !== null) this.clack(t, 1.5, 0.35); }
+  /** Effleurement discret : les lettres du chevalet s'écartent. */
+  slide() { const t = this.now(); if (t !== null) this.clack(t, 1.9, 0.12); }
   shuffle() {
     const t = this.now();
     if (t !== null) for (let i = 0; i < 5; i++) this.clack(t + i * 0.045 + Math.random() * 0.02, 1.2 + Math.random() * 0.5, 0.3);
