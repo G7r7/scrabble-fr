@@ -18,6 +18,7 @@ import { normalizeWord } from '../dict/normalize.js';
 
 interface RackTile { id: number; letter: string }
 interface PendingTile extends RackTile { r: number; c: number; assigned: string }
+type Tab = 'game' | 'history' | 'dict' | 'options';
 interface DictInfo { source: 'libre' | 'ods'; count: number; name: string }
 
 const BONUS_LABEL: Record<string, string> = { MT: 'Mot<br>×3', MD: 'Mot<br>×2', LT: 'Lettre<br>×3', LD: 'Lettre<br>×2' };
@@ -50,6 +51,9 @@ export class App {
   private exchangeSel = new Set<number>();
   private dict: DictInfo | null = null;
   private previewToken = 0;
+  private tab: Tab = 'game';
+  private historySeen = 0;
+  private land = matchMedia('(min-aspect-ratio: 1/1) and (min-width: 760px)');
 
   // Jeu en ligne : « solo » contre l'ordinateur, « host » (crée la partie et arbitre), « guest » (rejoint).
   private mode: 'solo' | 'host' | 'guest' = 'solo';
@@ -723,6 +727,7 @@ export class App {
     this.el.onlineBtn.addEventListener('click', () => this.lobby('menu'));
     this.el.sfxBtn.addEventListener('click', () => { this.sound.setSfx(!this.sound.sfxOn); this.renderSoundButtons(); this.sound.place(); });
     this.el.musicBtn.addEventListener('click', () => { this.sound.setMusic(!this.sound.musicOn); this.renderSoundButtons(); });
+    this.bindTabs();
     const fs = $(this.root, '#fsBtn');
     if (document.fullscreenEnabled) {
       fs.hidden = false;
@@ -776,6 +781,49 @@ export class App {
     });
 
     this.bindDrag();
+  }
+
+  /**
+   * En portrait, une barre d'onglets en bas bascule entre la partie, l'historique, le dictionnaire
+   * et les options (niveau, jeu en ligne, nouvelle partie). En paysage tout est visible à la fois
+   * et les options reviennent dans l'en-tête.
+   */
+  private bindTabs() {
+    const opts = $(this.root, '#topActions');
+    const top = $(this.root, '.top');
+    const optPane = $(this.root, '.pane[data-pane="options"]');
+    const details = $<HTMLDetailsElement>(this.root, '.dict-box');
+    const place = () => {
+      if (this.land.matches) { top.appendChild(opts); this.setTab('game'); }
+      else { optPane.appendChild(opts); details.open = true; }
+    };
+    place();
+    this.land.addEventListener('change', place);
+    $(this.root, '.tabs').addEventListener('click', (e) => {
+      const t = (e.target as HTMLElement).closest<HTMLElement>('[data-tab]')?.dataset.tab;
+      if (t) this.setTab(t as Tab);
+    });
+    // Lancer une partie ramène sur le plateau.
+    for (const id of ['#onlineBtn', '#newGame']) $(this.root, id).addEventListener('click', () => this.setTab('game'));
+    this.setTab('game');
+  }
+
+  private setTab(tab: Tab) {
+    this.tab = tab;
+    $(this.root, '.app').dataset.tab = tab;
+    for (const b of this.root.querySelectorAll<HTMLElement>('.tabs [data-tab]')) {
+      b.setAttribute('aria-selected', String(b.dataset.tab === tab));
+    }
+    this.renderBadge();
+  }
+
+  /** Pastille sur l'onglet Historique quand des coups ont été joués depuis la dernière visite. */
+  private renderBadge() {
+    const badge = this.root.querySelector<HTMLElement>('.tabs .badge');
+    if (!badge || !this.game) return;
+    const n = this.game.history.length;
+    if (this.tab === 'history' || this.historySeen > n) this.historySeen = n;
+    badge.hidden = n <= this.historySeen;
   }
 
   private bindDrag() {
@@ -895,6 +943,8 @@ export class App {
       if (cell && (await this.flipFromAsync(prev, () => this.placeTile(d.id, +cell.dataset.r!, +cell.dataset.c!)))) return;
       this.flipFrom(prev, () => this.render());
     };
+    // Filet de sécurité : aucun défilement (ni rafraîchissement par glissement) pendant qu'une lettre est tenue.
+    document.addEventListener('touchmove', (e) => { if (drag) e.preventDefault(); }, { passive: false });
     this.root.addEventListener('pointerup', (e) => void end(e));
     this.root.addEventListener('pointercancel', (e) => void end(e, true));
 
@@ -1049,6 +1099,7 @@ export class App {
     }
 
     this.renderDict();
+    this.renderBadge();
     void this.updatePreview();
   }
 
@@ -1111,17 +1162,19 @@ export class App {
 
 const TEMPLATE = `
 <main class="app">
+<div class="board-wrap"><div id="board" class="board" aria-label="Plateau"></div></div>
+<div class="panel">
 <header class="top">
   <div class="top-title">
   <h1>Scrabble <em>FR</em></h1>
   <div class="top-icons">
-    <span id="onlineInfo" class="online-info" hidden></span>
     <button class="btn icon" id="sfxBtn" aria-label="Sons"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4z"/><path class="on" d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12"/><path class="off" d="M16 9l6 6M22 9l-6 6"/></svg></button>
     <button class="btn icon" id="musicBtn" aria-label="Musique"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V6l11-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16" r="2.5"/><path class="off" d="M3 3l18 18"/></svg></button>
     <button class="btn icon" id="fsBtn" aria-label="Plein écran" aria-pressed="false" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path class="off" d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/><path class="on" d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg></button>
   </div>
   </div>
-  <div class="top-actions">
+  <div class="top-actions" id="topActions">
+    <span id="onlineInfo" class="online-info" hidden></span>
     <label class="level" id="levelWrap">Niveau
       <select id="level">
         <option value="facile">Facile</option>
@@ -1137,14 +1190,17 @@ const TEMPLATE = `
   <div id="scores" class="scores"></div>
   <p id="bag" class="bag"></p>
 </section>
-<div id="board" class="board" aria-label="Plateau"></div>
 <div id="preview" class="preview" aria-live="polite"></div>
 <div id="rack" class="rack" aria-label="Chevalet"></div>
 <div id="actions" class="actions"></div>
 <p id="status" aria-live="polite"></p>
-<aside class="side">
-  <h2>Historique</h2>
-  <ol id="history" class="history"></ol>
+<aside class="side" id="side">
+  <section class="pane" data-pane="options"><h2>Options</h2></section>
+  <section class="pane" data-pane="history">
+    <h2>Historique</h2>
+    <ol id="history" class="history"></ol>
+  </section>
+  <section class="pane" data-pane="dict">
   <details class="dict-box">
     <summary><h2>Dictionnaire</h2></summary>
     <form id="dict" class="dict">
@@ -1159,7 +1215,15 @@ const TEMPLATE = `
       <p id="checkResult"></p>
     </form>
   </details>
+  </section>
 </aside>
+<nav class="tabs" role="tablist" aria-label="Sections">
+  <button role="tab" data-tab="game"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1.5"/><rect x="13" y="4" width="7" height="7" rx="1.5"/><rect x="4" y="13" width="7" height="7" rx="1.5"/><rect x="13" y="13" width="7" height="7" rx="1.5"/></svg>Partie</button>
+  <button role="tab" data-tab="history"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/></svg>Historique<i class="badge" hidden></i></button>
+  <button role="tab" data-tab="dict"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h10a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z"/><path d="M5 17a3 3 0 0 1 3-3h10"/></svg>Dictionnaire</button>
+  <button role="tab" data-tab="options"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg>Options</button>
+</nav>
+</div>
 </main>
 <div id="loading" class="overlay open"><div class="card"><div class="spinner"></div><p>Chargement du dictionnaire…</p></div></div>
 <div id="blankDialog" class="overlay"><div class="card">
