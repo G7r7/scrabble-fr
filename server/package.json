@@ -1,0 +1,15 @@
+{
+  "name": "scrabble-fr-relay",
+  "version": "1.0.0",
+  "description": "Relais WebSocket du jeu en ligne de Scrabble FR",
+  "private": true,
+  "type": "module",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "ws": "^8.18.3"
+  }
+}

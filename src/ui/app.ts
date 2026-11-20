@@ -2,11 +2,17 @@ import { BLANK, BONUS, CENTER, RACK_SIZE, SIZE, letterValue } from '../game/cons
 import { evaluatePlacement } from '../game/rules';
 import { shuffle } from '../game/bag';
 import {
-  AI, HUMAN, exchange, loadGame, newGame, pass, playMove, saveGame, winnerText, type GameState,
+  AI, exchange, loadGame, newGame, pass, playMove, saveGame, winnerText, type GameState, type HistoryEntry,
 } from '../game/game';
+import { applyAction, parseAction, viewFor, type Action } from '../game/remote';
 import type { Placement } from '../game/types';
+import {
+  CODE_TAKEN, RelayLink, isCode, newCode, newToken, normalizeCode,
+  type GuestLink, type GuestMsg, type HostLink, type HostMsg,
+} from '../net/online';
 import type { Level } from '../ai/player';
 import { Engine } from '../engine';
+import { Fx, Sound } from './fx';
 import { clearOds, loadOds, saveOds } from '../dict/store';
 import { normalizeWord } from '../dict/normalize.js';
 
@@ -18,6 +24,18 @@ const BONUS_LABEL: Record<string, string> = { MT: 'Mot<br>×3', MD: 'Mot<br>×2'
 const LEVELS: Level[] = ['facile', 'moyen', 'difficile'];
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const $ = <T extends HTMLElement = HTMLElement>(root: ParentNode, sel: string) => root.querySelector(sel) as T;
+const cleanName = (s: unknown) =>
+  typeof s === 'string' ? s.replace(/[\u0000-\u001f\u007f]/g, '').replace(/\s+/g, ' ').trim().slice(0, 16) : '';
+function lsGet(k: string) { try { return localStorage.getItem(k); } catch { return null; } }
+function lsSet(k: string, v: string) { try { localStorage.setItem(k, v); } catch { /* rien */ } }
+function lsDel(k: string) { try { localStorage.removeItem(k); } catch { /* rien */ } }
+const HOST_SAVE = 'scrabble-fr-hote';
+interface HostSave { code: string; token: string; state: GameState }
+function setUrlCode(code: string | null) {
+  const url = new URL(location.href);
+  if (code) url.searchParams.set('partie', code); else url.searchParams.delete('partie');
+  history.replaceState(null, '', url);
+}
 const esc = (s: string) => s.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch]!);
 
 export class App {
@@ -33,8 +51,24 @@ export class App {
   private dict: DictInfo | null = null;
   private previewToken = 0;
 
+  // Jeu en ligne : « solo » contre l'ordinateur, « host » (crée la partie et arbitre), « guest » (rejoint).
+  private mode: 'solo' | 'host' | 'guest' = 'solo';
+  private me: 0 | 1 = 0;
+  private host: HostLink | null = null;
+  private guest: GuestLink | null = null;
+  private hostToken = '';
+  private oppConnected = false;
+
+  // Effets : sons, animation du dernier coup, compteurs de points.
+  private sound = new Sound();
+  private fx = new Fx(this.sound);
+  private seen = 0;                       // entrées d'historique déjà célébrées
+  private shown: [number, number] | null = null; // scores affichés (pendant le défilement)
+  private fxDone: Promise<void> = Promise.resolve();
+
   private el = {} as Record<
-    'board' | 'rack' | 'preview' | 'scores' | 'bag' | 'history' | 'actions' | 'dict' | 'status' | 'level',
+    'board' | 'rack' | 'preview' | 'scores' | 'bag' | 'history' | 'actions' | 'dict' | 'status' | 'level' |
+    'levelWrap' | 'onlineBtn' | 'newGame' | 'onlineInfo' | 'onlineBody' | 'sfxBtn' | 'musicBtn',
     HTMLElement
   >;
 
@@ -42,7 +76,8 @@ export class App {
 
   async start() {
     this.root.innerHTML = TEMPLATE;
-    for (const k of ['board', 'rack', 'preview', 'scores', 'bag', 'history', 'actions', 'dict', 'status', 'level'] as const) {
+    for (const k of ['board', 'rack', 'preview', 'scores', 'bag', 'history', 'actions', 'dict', 'status', 'level',
+      'levelWrap', 'onlineBtn', 'newGame', 'onlineInfo', 'onlineBody', 'sfxBtn', 'musicBtn'] as const) {
       this.el[k] = $(this.root, `#${k}`);
     }
     this.buildBoard();
@@ -60,9 +95,22 @@ export class App {
     const saved = loadGame();
     this.game = saved && !saved.over ? saved : newGame(this.readLevel());
     (this.el.level as HTMLSelectElement).value = this.game.level;
+    this.seen = this.game.history.length;
     this.syncRack();
     this.render();
     if (this.game.current === AI && !this.game.over) void this.aiTurn();
+
+    const code = normalizeCode(new URLSearchParams(location.search).get('partie') ?? '');
+    let hosted: HostSave | null = null;
+    try { hosted = JSON.parse(lsGet(HOST_SAVE) ?? 'null'); } catch { /* rien */ }
+    if (hosted && isCode(code) && hosted.code === code && !hosted.state.over) {
+      // L'hôte a rechargé la page : il reprend sa partie, l'invité se reconnectera.
+      this.openHost(code, hosted.token, hosted.state);
+    } else if (isCode(code)) {
+      // Déjà venu sur cette partie (rechargement) : on se reconnecte directement.
+      if (lsGet(`scrabble-fr-jeton-${code}`) && lsGet('scrabble-fr-nom')) this.joinGame(code);
+      else this.lobby('menu', code);
+    }
   }
 
   // ---------- Dictionnaire ----------
@@ -120,20 +168,17 @@ export class App {
   }
 
   private startNewGame() {
+    if (this.mode !== 'solo') return this.quitOnline();
     if (this.busy) return;
     if (!this.game.over && this.game.history.length > 0 && !confirm('Abandonner la partie en cours ?')) return;
     this.game = newGame((this.el.level as HTMLSelectElement).value as Level);
-    this.pending = [];
-    this.tiles = [];
-    this.exchangeMode = false;
-    this.selected = null;
-    $(this.root, '#endDialog').classList.remove('open');
+    this.resetBoardUi();
     this.afterTurn();
   }
 
   /** Aligne les tuiles affichées sur le chevalet réel, en conservant l'ordre choisi par le joueur. */
   private syncRack() {
-    const rack = [...this.game.players[HUMAN].rack];
+    const rack = [...this.game.players[this.me].rack];
     const kept: RackTile[] = [];
     for (const t of [...this.tiles, ...this.pending]) {
       const i = rack.indexOf(t.letter);
@@ -152,15 +197,21 @@ export class App {
   }
 
   private canAct() {
-    return !this.busy && !this.game.over && this.game.current === HUMAN;
+    return !this.busy && !this.game.over && this.game.current === this.me &&
+      (this.mode !== 'guest' || this.oppConnected);
   }
+
+  private get opp(): 0 | 1 { return this.me === 0 ? 1 : 0; }
 
   private async play() {
     if (!this.canAct() || !this.pending.length) return;
     const ps = this.placements();
     const res = evaluatePlacement(this.game.board, ps);
-    if (!res.ok) return this.setStatus(res.error, true);
+    if (!res.ok) { this.sound.invalid(); return this.setStatus(res.error, true); }
+    // L'invité soumet son coup à l'hôte, dont le dictionnaire fait foi.
+    if (this.mode === 'guest') return this.sendAction({ type: 'play', placements: ps });
     const invalid = await this.engine.invalidWords(res.words.map((w) => w.word));
+    if (invalid.length) this.sound.invalid();
     if (invalid.length) return this.setStatus(`Mot${invalid.length > 1 ? 's' : ''} absent${invalid.length > 1 ? 's' : ''} du dictionnaire : ${invalid.join(', ')}`, true);
     // On retire les tuiles posées pour que syncRack n'en garde que les restantes.
     const placedIds = new Set(this.pending.map((p) => p.id));
@@ -175,6 +226,7 @@ export class App {
     if (!this.canAct()) return;
     if (!confirm('Passer votre tour ?')) return;
     this.recallAll();
+    if (this.mode === 'guest') return this.sendAction({ type: 'pass' });
     pass(this.game);
     this.afterTurn();
   }
@@ -192,6 +244,11 @@ export class App {
   private confirmExchange() {
     if (!this.exchangeSel.size) return this.setStatus('Sélectionnez au moins une lettre.', true);
     const letters = this.tiles.filter((t) => this.exchangeSel.has(t.id)).map((t) => t.letter);
+    if (this.mode === 'guest') {
+      this.exchangeMode = false;
+      this.exchangeSel.clear();
+      return this.sendAction({ type: 'exchange', letters });
+    }
     this.tiles = this.tiles.filter((t) => !this.exchangeSel.has(t.id));
     exchange(this.game, letters);
     this.exchangeMode = false;
@@ -201,11 +258,53 @@ export class App {
   }
 
   private afterTurn() {
-    saveGame(this.game);
+    if (this.mode === 'solo') saveGame(this.game);
+    if (this.mode === 'host' && this.host) {
+      this.host.send({ type: 'state', state: viewFor(this.game, 1), you: 1 });
+      lsSet(HOST_SAVE, JSON.stringify({ code: this.host.code, token: this.hostToken, state: this.game } satisfies HostSave));
+    }
     this.syncRack();
     this.render();
-    if (this.game.over) return this.showEnd();
-    if (this.game.current === AI) void this.aiTurn();
+    this.celebrate();
+    if (this.game.over) return void this.fxDone.then(() => this.showEnd());
+    if (this.mode === 'solo' && this.game.players[this.game.current].isAi) void this.aiTurn();
+  }
+
+  /** Anime et sonorise ce qui vient de se passer (coup joué, échange, tour suivant), puis fait défiler les scores. */
+  private celebrate() {
+    const g = this.game;
+    const fresh = g.history.slice(this.seen);
+    this.seen = g.history.length;
+    const play = fresh.find((e) => e.kind === 'play');
+    let wait = 0;
+    if (play && g.lastWords?.length) {
+      wait = this.fx.duration(g.lastMove.length, g.lastWords.length);
+      this.fxDone = this.fx.countMove(this.el.board, g.lastMove, g.lastWords, play.score);
+    } else if (fresh.some((e) => e.kind === 'exchange')) {
+      this.sound.shuffle();
+      this.fxDone = Promise.resolve();
+    } else if (fresh.some((e) => e.kind === 'pass')) {
+      this.sound.soft();
+      this.fxDone = Promise.resolve();
+    }
+    // En ligne, petit signal quand c'est de nouveau à vous.
+    if (this.mode !== 'solo' && fresh.length && !g.over && g.current === this.me) {
+      void this.fxDone.then(() => this.sound.turn());
+    }
+    this.tweenScores(wait);
+  }
+
+  private tweenScores(delayMs: number) {
+    const target: [number, number] = [this.game.players[0].score, this.game.players[1].score];
+    const shown = this.shown ?? [...target];
+    this.shown = shown;
+    const g = this.game;
+    const pts = (i: number) => this.el.scores.querySelector<HTMLElement>(`.pts[data-p="${i}"]`);
+    for (const i of [0, 1] as const) {
+      this.fx.tween(shown[i], target[i], delayMs,
+        (v) => { if (g !== this.game) return; shown[i] = v; const el = pts(i); if (el) el.textContent = String(v); },
+        () => { const el = pts(i); if (!el) return; el.classList.remove('bump'); void el.offsetWidth; el.classList.add('bump'); });
+    }
   }
 
   private async aiTurn() {
@@ -215,7 +314,7 @@ export class App {
       const g = this.game;
       const [d] = await Promise.all([
         this.engine.aiMove(g.board, g.players[AI].rack, g.bag.length, g.level),
-        delay(700),
+        this.fxDone.then(() => delay(500)),
       ]);
       if (g !== this.game) return; // nouvelle partie lancée entre-temps
       if (d.kind === 'play') {
@@ -239,11 +338,298 @@ export class App {
 
   private showEnd() {
     const d = $(this.root, '#endDialog');
-    $(d, '#endTitle').textContent = winnerText(this.game);
-    const [h, a] = this.game.players;
+    $(d, '#endTitle').textContent = winnerText(this.game, this.me);
+    const h = this.game.players[this.me], a = this.game.players[this.opp];
+    const other = this.mode === 'solo' ? 'ordinateur' : a.name;
     $(d, '#endDetail').textContent =
-      `Lettres restantes — vous : ${h.rack.join(' ') || 'aucune'} · ordinateur : ${a.rack.join(' ') || 'aucune'}`;
+      `Lettres restantes — vous : ${h.rack.join(' ') || 'aucune'} · ${other} : ${a.rack.join(' ') || 'aucune'}`;
+    $(d, '#endNew').textContent = this.mode === 'solo' ? 'Nouvelle partie' : 'Revanche';
     d.classList.add('open');
+    this.sound.end(h.score > a.score);
+  }
+
+  // ---------- Jeu en ligne ----------
+
+  /** Message d'état décrivant un coup qui vient d'être joué. */
+  private describe(e: HistoryEntry): string {
+    const mine = e.player === this.me;
+    const name = this.game.players[e.player].name;
+    if (e.kind === 'play') return mine ? `Vous marquez ${e.score} points.` : `${name} joue ${e.text} pour ${e.score} points.`;
+    if (e.kind === 'exchange') return mine ? 'Vous échangez des lettres.' : `${name} échange des lettres.`;
+    if (e.kind === 'pass') return mine ? 'Vous passez votre tour.' : `${name} passe son tour.`;
+    return '';
+  }
+
+  private sendAction(action: Action) {
+    if (!this.guest?.connected || !this.oppConnected) return this.setStatus('L’hôte n’est pas connecté pour l’instant.', true);
+    this.busy = true;
+    this.guest.send({ type: 'action', action });
+    this.setStatus('Envoi du coup…');
+    this.render();
+  }
+
+  private myName() { return cleanName(lsGet('scrabble-fr-nom')) || 'Joueur'; }
+
+  /** Remet l'interface à zéro pour une nouvelle partie (en ligne ou non). */
+  private resetBoardUi() {
+    this.tiles = [];
+    this.pending = [];
+    this.selected = null;
+    this.exchangeMode = false;
+    this.exchangeSel.clear();
+    this.busy = false;
+    this.seen = this.game.history.length;
+    this.shown = null;
+    $(this.root, '#endDialog').classList.remove('open');
+  }
+
+  private createGame() {
+    this.closeLinks();
+    this.openHost(newCode(), newToken(), null);
+  }
+
+  /** Ouvre (ou rouvre, après rechargement) une partie en tant qu'hôte. */
+  private openHost(code: string, token: string, resume: GameState | null) {
+    this.hostToken = token;
+    setUrlCode(code);
+    if (resume) {
+      this.mode = 'host';
+      this.me = 0;
+      this.game = resume;
+      this.resetBoardUi();
+      this.setStatus(`Partie en ligne reprise. En attente de ${resume.players[1].name}…`);
+      this.syncRack();
+      this.render();
+    } else this.lobby('hosting', code, false);
+    this.host = new RelayLink<GuestMsg, HostMsg>(code, 'host', token, {
+      onOpen: () => { if (this.mode === 'solo') this.lobby('hosting', code, true); },
+      onPeer: (online) => {
+        this.oppConnected = online;
+        if (!online && this.mode === 'host' && !this.game.over) {
+          this.setStatus(`${this.game.players[1].name} est hors ligne. En attente de son retour…`, true);
+        }
+        this.render();
+      },
+      onMessage: (m) => void this.onGuestMsg(m),
+      onError: (text, fatal) => {
+        if (text === CODE_TAKEN && this.mode === 'solo') return this.createGame();
+        if (fatal && this.mode === 'solo') { this.closeLinks(); this.lobby('error', text); } else this.setStatus(text, true);
+      },
+    });
+  }
+
+  private async onGuestMsg(m: GuestMsg) {
+    if (!m || typeof m !== 'object') return;
+    if (m.type === 'hello') {
+      const name = cleanName(m.name) || 'Invité';
+      if (this.mode !== 'host') {
+        this.mode = 'host';
+        this.me = 0;
+        this.game = newGame('moyen', { names: [this.myName(), name] });
+        this.resetBoardUi();
+        this.closeLobby();
+        this.setStatus(`${name} a rejoint la partie.`);
+      } else {
+        this.game.players[1].name = name;
+        this.setStatus(`${name} est de retour.`);
+      }
+      return this.afterTurn();
+    }
+    if (this.mode !== 'host') return;
+    if (m.type === 'action') {
+      const action = parseAction(m.action);
+      if (!action) return this.host?.send({ type: 'error', message: 'Coup mal formé.' });
+      const err = await applyAction(this.game, 1, action, (w) => this.engine.invalidWords(w));
+      if (err) return this.host?.send({ type: 'error', message: err });
+      this.setStatus(this.describe(this.game.history[this.game.history.length - 1]));
+      this.afterTurn();
+    } else if (m.type === 'rematch') {
+      if (this.game.over) this.rematch();
+    } else if (m.type === 'bye') {
+      this.oppConnected = false;
+      this.setStatus(`${this.game.players[1].name} a quitté la partie.`, true);
+      this.render();
+    }
+  }
+
+  private joinGame(code: string) {
+    this.closeLinks();
+    let token = lsGet(`scrabble-fr-jeton-${code}`);
+    if (!token) { token = newToken(); lsSet(`scrabble-fr-jeton-${code}`, token); }
+    setUrlCode(code);
+    this.lobby('joining', code);
+    const link: GuestLink = new RelayLink<HostMsg, GuestMsg>(code, 'guest', token, {
+      onPeer: (online) => {
+        this.oppConnected = online;
+        // L'hôte (re)vient : on se présente, il répond avec l'état de la partie.
+        if (online) {
+          link.send({ type: 'hello', name: this.myName() });
+          if (this.mode === 'guest') { this.setStatus(`${this.game.players[this.opp].name} est de retour.`); this.render(); }
+          return;
+        }
+        this.busy = false;
+        if (this.mode === 'guest' && !this.game.over) {
+          this.setStatus(`${this.game.players[this.opp].name} est hors ligne. En attente de son retour…`, true);
+        }
+        this.render();
+      },
+      onMessage: (m) => this.onHostMsg(m),
+      onError: (text, fatal) => {
+        if (fatal && this.mode === 'solo') { this.closeLinks(); this.lobby('error', text); } else this.setStatus(text, true);
+      },
+    });
+    this.guest = link;
+  }
+
+  private onHostMsg(m: HostMsg) {
+    if (!m || typeof m !== 'object') return;
+    if (m.type === 'state') {
+      const prev = this.mode === 'guest' ? this.game : null;
+      const fresh = !prev || m.state.history.length < prev.history.length || (prev.over && !m.state.over);
+      this.mode = 'guest';
+      this.me = m.you;
+      this.game = m.state;
+      if (fresh) { this.resetBoardUi(); this.closeLobby(); }
+      this.busy = false;
+      const last = this.game.history[this.game.history.length - 1];
+      if (fresh) this.setStatus(`Partie contre ${this.game.players[this.opp].name}. Bonne chance !`);
+      else if (last && prev && this.game.history.length > prev.history.length) this.setStatus(this.describe(last));
+      this.syncRack();
+      this.render();
+      this.celebrate();
+      if (this.game.over && !prev?.over) void this.fxDone.then(() => this.showEnd());
+    } else if (m.type === 'error') {
+      if (this.mode !== 'guest') { this.closeLinks(); return this.lobby('error', m.message); }
+      this.busy = false;
+      this.sound.invalid();
+      this.setStatus(m.message, true);
+      this.render();
+    } else if (m.type === 'bye') {
+      this.oppConnected = false;
+      this.setStatus(`${this.game.players[this.opp].name} a fermé la partie.`, true);
+      this.render();
+    }
+  }
+
+  private rematch() {
+    if (this.mode === 'guest') {
+      this.guest?.send({ type: 'rematch' });
+      $(this.root, '#endDialog').classList.remove('open');
+      return this.setStatus('Revanche demandée…');
+    }
+    const [a, b] = this.game.players;
+    this.game = newGame('moyen', { names: [a.name, b.name] });
+    this.resetBoardUi();
+    this.setStatus('Nouvelle manche !');
+    this.afterTurn();
+  }
+
+  private closeLinks() {
+    this.host?.close({ type: 'bye' });
+    this.guest?.close({ type: 'bye' });
+    this.host = this.guest = null;
+    this.oppConnected = false;
+  }
+
+  private quitOnline() {
+    if (!this.game.over && !confirm('Quitter la partie en ligne ?')) return;
+    this.closeLinks();
+    if (this.mode === 'host') lsDel(HOST_SAVE);
+    this.mode = 'solo';
+    this.me = 0;
+    setUrlCode(null);
+    const saved = loadGame();
+    this.game = saved && !saved.over ? saved : newGame(this.readLevel());
+    this.resetBoardUi();
+    this.setStatus('Retour à la partie contre l’ordinateur.');
+    this.afterTurn();
+  }
+
+  private lobby(view: 'menu' | 'hosting' | 'joining' | 'error', arg = '', ready = false) {
+    const name = esc(cleanName(lsGet('scrabble-fr-nom')));
+    const body = this.el.onlineBody;
+    if (view === 'menu') {
+      body.innerHTML = `
+        <h2>Jouer en ligne</h2>
+        <p class="muted">Affrontez quelqu’un à distance : créez une partie et envoyez-lui le lien.</p>
+        <label class="field">Votre nom<input id="olName" maxlength="16" autocomplete="nickname" value="${name}" placeholder="Votre nom" /></label>
+        ${arg ? '' : '<button class="btn primary wide" data-ol="create">Créer une partie</button><div class="sep"><span>ou</span></div>'}
+        <form class="check" data-ol="join-form">
+          <input id="olCode" maxlength="7" placeholder="Code de la partie" autocomplete="off" autocapitalize="characters" value="${esc(arg)}" />
+          <button class="btn ${arg ? 'primary' : ''}">Rejoindre</button>
+        </form>
+        <p class="note">Le dictionnaire de la personne qui crée la partie fait foi.</p>
+        <div class="row"><button type="button" class="btn" data-ol="close">Fermer</button></div>`;
+    } else if (view === 'hosting') {
+      const link = `${location.origin}${location.pathname}?partie=${arg}`;
+      body.innerHTML = `
+        <h2>Partie créée</h2>
+        <p class="muted">Envoyez ce lien à votre adversaire :</p>
+        <div class="check"><input id="olLink" readonly value="${esc(link)}" /><button class="btn" data-ol="copy">Copier</button></div>
+        <p class="code" aria-label="Code de la partie">${arg}</p>
+        <p class="wait"><span class="spinner small"></span>${ready ? 'En attente de votre adversaire…' : 'Ouverture de la partie…'}</p>
+        <div class="row">
+          ${'share' in navigator ? '<button class="btn" data-ol="share">Partager…</button>' : ''}
+          <button class="btn" data-ol="cancel">Annuler</button>
+        </div>`;
+    } else if (view === 'joining') {
+      body.innerHTML = `
+        <h2>Connexion…</h2>
+        <p class="wait"><span class="spinner small"></span>Connexion à la partie <strong>${esc(arg)}</strong></p>
+        <div class="row"><button class="btn" data-ol="cancel">Annuler</button></div>`;
+    } else {
+      body.innerHTML = `
+        <h2>Jeu en ligne</h2>
+        <p class="bad">${esc(arg)}</p>
+        <div class="row"><button class="btn primary" data-ol="menu">Retour</button><button class="btn" data-ol="cancel">Fermer</button></div>`;
+    }
+    $(this.root, '#onlineDialog').classList.add('open');
+    body.querySelector<HTMLInputElement>(view === 'menu' && !name ? '#olName' : '#olCode')?.focus();
+  }
+
+  private closeLobby() { $(this.root, '#onlineDialog').classList.remove('open'); }
+
+  private bindLobby() {
+    const body = this.el.onlineBody;
+    const saveName = () => {
+      const input = body.querySelector<HTMLInputElement>('#olName');
+      const n = cleanName(input?.value);
+      if (!n) { input?.focus(); input?.classList.add('invalid'); return false; }
+      lsSet('scrabble-fr-nom', n);
+      return true;
+    };
+    const cancel = () => {
+      if (this.mode !== 'solo') return this.closeLobby();
+      this.closeLinks();
+      this.closeLobby();
+      setUrlCode(null);
+    };
+    body.addEventListener('click', (e) => {
+      const a = (e.target as HTMLElement).closest<HTMLElement>('[data-ol]')?.dataset.ol;
+      if (a === 'create') { if (saveName()) this.createGame(); }
+      else if (a === 'close' || a === 'cancel') cancel();
+      else if (a === 'menu') this.lobby('menu');
+      else if (a === 'copy') {
+        const input = $<HTMLInputElement>(body, '#olLink');
+        input.select();
+        navigator.clipboard?.writeText(input.value).then(
+          () => { (e.target as HTMLElement).textContent = 'Copié !'; },
+          () => document.execCommand('copy'),
+        );
+      } else if (a === 'share') {
+        const url = $<HTMLInputElement>(body, '#olLink').value;
+        navigator.share?.({ title: 'Scrabble FR', text: 'Une partie de Scrabble ?', url }).catch(() => { /* annulé */ });
+      }
+    });
+    body.addEventListener('submit', (e) => {
+      e.preventDefault();
+      if (!saveName()) return;
+      const input = $<HTMLInputElement>(body, '#olCode');
+      const code = normalizeCode(input.value);
+      if (!isCode(code)) { input.classList.add('invalid'); return input.focus(); }
+      this.joinGame(code);
+    });
+    body.addEventListener('input', (e) => (e.target as HTMLElement).classList.remove('invalid'));
   }
 
   // ---------- Tuiles ----------
@@ -267,11 +653,13 @@ export class App {
       this.tiles.splice(i, 1);
       this.pending.push({ ...t, r, c, assigned });
     }
+    this.sound.place();
     this.selected = null;
     this.render();
   }
 
   private returnTile(id: number, beforeId?: number) {
+    this.sound.pickup();
     let tile: RackTile | undefined;
     const pi = this.pending.findIndex((p) => p.id === id);
     if (pi >= 0) {
@@ -324,17 +712,23 @@ export class App {
       const a = (e.target as HTMLElement).closest<HTMLElement>('[data-action]')?.dataset.action;
       if (a === 'play') void this.play();
       else if (a === 'recall') { this.recallAll(); this.render(); }
-      else if (a === 'shuffle') { shuffle(this.tiles); this.render(); }
+      else if (a === 'shuffle') { shuffle(this.tiles); this.sound.shuffle(); this.render(); }
       else if (a === 'exchange') this.toggleExchange();
       else if (a === 'confirm-exchange') this.confirmExchange();
       else if (a === 'pass') this.doPass();
     });
     $(this.root, '#newGame').addEventListener('click', () => this.startNewGame());
-    $(this.root, '#endNew').addEventListener('click', () => this.startNewGame());
+    $(this.root, '#endNew').addEventListener('click', () => (this.mode === 'solo' ? this.startNewGame() : this.rematch()));
+    this.el.onlineBtn.addEventListener('click', () => this.lobby('menu'));
+    this.el.sfxBtn.addEventListener('click', () => { this.sound.setSfx(!this.sound.sfxOn); this.renderSoundButtons(); this.sound.place(); });
+    this.el.musicBtn.addEventListener('click', () => { this.sound.setMusic(!this.sound.musicOn); this.renderSoundButtons(); });
+    this.renderSoundButtons();
+    this.bindLobby();
     $(this.root, '#endClose').addEventListener('click', () => $(this.root, '#endDialog').classList.remove('open'));
     this.el.level.addEventListener('change', () => {
       const l = (this.el.level as HTMLSelectElement).value as Level;
       try { localStorage.setItem('scrabble-fr-niveau', l); } catch { /* rien */ }
+      if (this.mode !== 'solo') return;
       this.game.level = l;
       saveGame(this.game);
       this.setStatus(`Niveau de l'ordinateur : ${l}.`);
@@ -494,16 +888,21 @@ export class App {
       .join('') + '<div class="rack-spacer"></div>';
     this.el.rack.classList.toggle('exchange', this.exchangeMode);
 
-    const [h, a] = g.players;
+    const solo = this.mode === 'solo';
+    const h = g.players[this.me], a = g.players[this.opp];
     const turn = (i: number) => (!g.over && g.current === i ? 'turn' : '');
+    const oppTag = solo
+      ? (this.busy ? ' <i class="thinking">réfléchit</i>' : '')
+      : !this.oppConnected ? ' <i class="off">hors ligne</i>'
+      : !g.over && g.current === this.opp ? ' <i class="thinking">joue</i>' : '';
     this.el.scores.innerHTML = `
-      <div class="player ${turn(HUMAN)}"><span class="name">Vous</span><span class="pts">${h.score}</span></div>
-      <div class="player ${turn(AI)}"><span class="name">Ordinateur${this.busy ? ' <i class="thinking">réfléchit</i>' : ''}</span><span class="pts">${a.score}</span></div>`;
+      <div class="player ${turn(this.me)}"><span class="name">${solo ? 'Vous' : `${esc(h.name)} <i class="off">(vous)</i>`}</span><span class="pts" data-p="${this.me}">${this.shownScore(this.me)}</span></div>
+      <div class="player ${turn(this.opp)}"><span class="name">${solo ? 'Ordinateur' : esc(a.name)}${oppTag}</span><span class="pts" data-p="${this.opp}">${this.shownScore(this.opp)}</span></div>`;
     this.el.bag.textContent = `${g.bag.length} jeton${g.bag.length > 1 ? 's' : ''} dans le sac`;
 
     this.el.history.innerHTML = g.history.length
-      ? [...g.history].reverse().map((e) => `<li class="${e.player === HUMAN ? 'me' : 'ai'} k-${e.kind}">
-          <span class="who">${e.kind === 'end' ? '' : e.player === HUMAN ? 'Vous' : 'Ordi'}</span>
+      ? [...g.history].reverse().map((e) => `<li class="${e.player === this.me ? 'me' : 'ai'} k-${e.kind}">
+          <span class="who">${e.kind === 'end' ? '' : e.player === this.me ? 'Vous' : solo ? 'Ordi' : esc(g.players[e.player].name)}</span>
           <span class="what">${esc(e.text)}</span>
           <span class="sc">${e.kind === 'play' ? `+${e.score}` : ''}</span></li>`).join('')
       : '<li class="empty">Aucun coup pour l’instant.</li>';
@@ -518,8 +917,27 @@ export class App {
          <button class="btn" data-action="exchange" ${can && g.bag.length >= RACK_SIZE ? '' : 'disabled'}>Échanger</button>
          <button class="btn" data-action="pass" ${can ? '' : 'disabled'}>Passer</button>`;
 
+    this.el.levelWrap.hidden = !solo;
+    this.el.onlineBtn.hidden = !solo;
+    this.el.newGame.textContent = solo ? 'Nouvelle partie' : 'Quitter';
+    this.el.onlineInfo.hidden = solo;
+    if (!solo) {
+      const code = (this.host ?? this.guest)?.code ?? '';
+      this.el.onlineInfo.innerHTML = `<span class="dot ${this.oppConnected ? 'on' : ''}"></span>En ligne · <b>${esc(code)}</b>`;
+      this.el.onlineInfo.title = this.oppConnected ? 'Adversaire connecté' : 'Adversaire déconnecté';
+    }
+
     this.renderDict();
     void this.updatePreview();
+  }
+
+  private shownScore(i: 0 | 1) { return (this.shown ?? [this.game.players[0].score, this.game.players[1].score])[i]; }
+
+  private renderSoundButtons() {
+    this.el.sfxBtn.setAttribute('aria-pressed', String(this.sound.sfxOn));
+    this.el.sfxBtn.title = this.sound.sfxOn ? 'Couper les sons' : 'Activer les sons';
+    this.el.musicBtn.setAttribute('aria-pressed', String(this.sound.musicOn));
+    this.el.musicBtn.title = this.sound.musicOn ? 'Couper la musique' : 'Musique de fond';
   }
 
   private renderDict() {
@@ -539,7 +957,11 @@ export class App {
     const setPlayable = (v: boolean) => { if (playBtn) playBtn.disabled = !v; };
 
     if (!this.game || this.game.over) { out.innerHTML = ''; return setPlayable(false); }
-    if (this.game.current !== HUMAN) { out.innerHTML = '<span class="muted">Au tour de l’ordinateur…</span>'; return setPlayable(false); }
+    if (this.game.current !== this.me) {
+      const who = this.mode === 'solo' ? 'l’ordinateur' : esc(this.game.players[this.opp].name);
+      out.innerHTML = `<span class="muted">Au tour de ${who}…</span>`;
+      return setPlayable(false);
+    }
     if (this.exchangeMode) { out.innerHTML = '<span class="muted">Mode échange</span>'; return setPlayable(false); }
     if (!this.pending.length) {
       out.innerHTML = '<span class="muted">Glissez vos lettres sur le plateau, ou touchez une lettre puis une case.</span>';
@@ -554,8 +976,9 @@ export class App {
     if (token !== this.previewToken) return;
     if (invalid.length) {
       out.innerHTML = `<span class="words">${words.map((w) => (invalid.includes(w) ? `<s class="bad">${w}</s>` : w)).join(' · ')}</span>` +
-        `<span class="bad">absent du dictionnaire</span>`;
-      setPlayable(false);
+        `<span class="bad">absent du dictionnaire${this.mode === 'guest' ? ' (l’hôte tranchera)' : ''}</span>`;
+      // En ligne, seul le dictionnaire de l'hôte fait foi : l'invité peut tenter le coup.
+      setPlayable(this.mode === 'guest' && this.canAct());
     } else setPlayable(this.canAct());
   }
 
@@ -569,13 +992,17 @@ const TEMPLATE = `
 <header class="top">
   <h1>Scrabble <em>FR</em></h1>
   <div class="top-actions">
-    <label class="level">Niveau
+    <span id="onlineInfo" class="online-info" hidden></span>
+    <button class="btn icon" id="sfxBtn" aria-label="Sons"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4z"/><path class="on" d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12"/><path class="off" d="M16 9l6 6M22 9l-6 6"/></svg></button>
+    <button class="btn icon" id="musicBtn" aria-label="Musique"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V6l11-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16" r="2.5"/><path class="off" d="M3 3l18 18"/></svg></button>
+    <label class="level" id="levelWrap">Niveau
       <select id="level">
         <option value="facile">Facile</option>
         <option value="moyen">Moyen</option>
         <option value="difficile">Difficile</option>
       </select>
     </label>
+    <button class="btn primary" id="onlineBtn">Jouer en ligne</button>
     <button class="btn" id="newGame">Nouvelle partie</button>
   </div>
 </header>
@@ -611,6 +1038,7 @@ const TEMPLATE = `
   <h2>Lettre du joker</h2><div class="letters"></div>
   <button class="btn" data-cancel>Annuler</button>
 </div></div>
+<div id="onlineDialog" class="overlay"><div class="card online" id="onlineBody"></div></div>
 <div id="endDialog" class="overlay"><div class="card">
   <h2 id="endTitle"></h2><p id="endDetail" class="muted"></p>
   <div class="row"><button class="btn primary" id="endNew">Nouvelle partie</button><button class="btn" id="endClose">Voir le plateau</button></div>

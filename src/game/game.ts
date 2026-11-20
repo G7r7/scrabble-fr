@@ -2,7 +2,7 @@ import { BLANK, RACK_SIZE } from './constants';
 import { applyPlacements, emptyBoard } from './board';
 import { draw, newBag, shuffle } from './bag';
 import { rackValue } from './rules';
-import type { Board, Move } from './types';
+import type { Board, FormedWord, Move } from './types';
 import type { Level } from '../ai/player';
 
 export interface Player { name: string; rack: string[]; score: number; isAi: boolean }
@@ -24,21 +24,27 @@ export interface GameState {
   history: HistoryEntry[];
   level: Level;
   lastMove: [number, number][];
+  /** Mots formés par le dernier coup, avec leur score (pour l'animation du décompte). */
+  lastWords?: FormedWord[];
+  /** Partie en ligne entre deux humains (pas d'ordinateur, pas de sauvegarde locale). */
+  online?: boolean;
 }
 
 export const HUMAN = 0, AI = 1;
 const MAX_SCORELESS = 6;
 
-export function newGame(level: Level): GameState {
+export function newGame(level: Level, online?: { names: [string, string] }): GameState {
   const bag = newBag();
+  const [n0, n1] = online?.names ?? ['Vous', 'Ordinateur'];
   const players: [Player, Player] = [
-    { name: 'Vous', rack: draw(bag, RACK_SIZE), score: 0, isAi: false },
-    { name: 'Ordinateur', rack: draw(bag, RACK_SIZE), score: 0, isAi: true },
+    { name: n0, rack: draw(bag, RACK_SIZE), score: 0, isAi: false },
+    { name: n1, rack: draw(bag, RACK_SIZE), score: 0, isAi: !online },
   ];
   return {
     board: emptyBoard(), bag, players,
     current: Math.random() < 0.5 ? 0 : 1,
     scorelessTurns: 0, over: false, history: [], level, lastMove: [],
+    ...(online ? { online: true } : {}),
   };
 }
 
@@ -62,6 +68,7 @@ export function playMove(s: GameState, move: Move) {
   p.rack.push(...draw(s.bag, RACK_SIZE - p.rack.length));
   s.scorelessTurns = 0;
   s.lastMove = move.placements.map((x) => [x.r, x.c]);
+  s.lastWords = move.words;
   const words = move.words.map((w) => w.word).join(', ');
   s.history.push({
     player: s.current, kind: 'play', score: move.score,
@@ -74,7 +81,7 @@ export function playMove(s: GameState, move: Move) {
     const v = rackValue(other.rack);
     other.score -= v;
     p.score += v;
-    s.history.push({ player: s.current, kind: 'end', score: v, text: `Fin de partie : +${v} (lettres restantes de ${other.name.toLowerCase()})` });
+    s.history.push({ player: s.current, kind: 'end', score: v, text: `Fin de partie : +${v} (lettres restantes de ${s.online ? other.name : other.name.toLowerCase()})` });
     s.over = true;
     return;
   }
@@ -100,6 +107,7 @@ export function pass(s: GameState) {
 function scoreless(s: GameState) {
   s.scorelessTurns++;
   s.lastMove = [];
+  s.lastWords = [];
   if (s.scorelessTurns >= MAX_SCORELESS) {
     for (const p of s.players) p.score -= rackValue(p.rack);
     s.history.push({ player: s.current, kind: 'end', score: 0, text: 'Fin de partie : 6 tours sans point' });
@@ -109,8 +117,9 @@ function scoreless(s: GameState) {
   nextTurn(s);
 }
 
-export function winnerText(s: GameState): string {
-  const [h, a] = s.players;
+/** Résultat vu par le joueur `me`. */
+export function winnerText(s: GameState, me: 0 | 1 = 0): string {
+  const h = s.players[me], a = s.players[me === 0 ? 1 : 0];
   if (h.score > a.score) return `Victoire ! ${h.score} à ${a.score}`;
   if (h.score < a.score) return `Défaite… ${h.score} à ${a.score}`;
   return `Égalité : ${h.score} partout`;

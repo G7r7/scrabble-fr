@@ -8,6 +8,9 @@ Scrabble en français, à jouer dans le navigateur contre l'ordinateur.
 - Ordinateur en trois niveaux (facile, moyen, difficile). Il cherche ses coups avec l'algorithme d'Appel–Jacobson sur un graphe de mots (DAWG), calculé dans un Web Worker.
 - Glisser-déposer à la souris ou au doigt, ou bien toucher une lettre puis une case. Un aperçu affiche les mots formés et le score avant de jouer.
 - La partie en cours est sauvegardée dans le navigateur.
+- **Jeu en ligne** à deux : « Jouer en ligne », puis envoyez le lien (ou le code à 6 caractères) à votre adversaire.
+  Chacun peut recharger la page ou perdre le réseau : la partie reprend toute seule.
+- Animations (pose des lettres, décompte mot par mot, compteur de points) et sons synthétisés, avec une musique de fond facultative.
 
 ## Dictionnaire
 
@@ -30,3 +33,26 @@ npm run build
 ```
 
 Chaque push sur `main` déploie le site sur GitHub Pages (`.github/workflows/deploy.yml`).
+
+## Jeu en ligne : le relais (`server/`)
+
+Le site reste statique. Pour le jeu en ligne, un petit relais WebSocket (`server/server.mjs`, Node + `ws`)
+met en relation les deux joueurs et transmet leurs messages ; il ne connaît pas les règles.
+C'est le navigateur de la personne qui crée la partie qui arbitre : il garde le sac, vérifie chaque coup
+de l'invité avec son dictionnaire, et n'envoie à l'invité ni son chevalet ni l'ordre du sac.
+
+- En local : `cd server && npm install && npm start` (port 8787), puis `npm run dev`.
+- En production, l'adresse du relais est dans `.env.production` (`VITE_RELAY_URL`).
+
+### Hébergement sur alwaysdata
+
+1. Envoyer le relais (accès SSH par clé) : `server/deploy.sh` — il le copie dans `~/scrabble-relay` et installe `ws`.
+2. Dans l'administration alwaysdata, **Web › Sites › Ajouter un site** :
+   - Adresses : `grullier.alwaysdata.net/scrabble-relay`
+   - Type : **Node.js**
+   - Commande : `node server.mjs`
+   - Répertoire de travail : `scrabble-relay`
+   - Version de Node.js : **24** (la version par défaut du compte est trop ancienne)
+3. Vérifier : `https://grullier.alwaysdata.net/scrabble-relay` affiche « Relais Scrabble FR ».
+
+Le relais écoute sur `$IP:$PORT` fournis par alwaysdata ; les WebSockets passent par le même site.
