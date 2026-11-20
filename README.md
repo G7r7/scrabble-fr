@@ -56,3 +56,6 @@ de l'invité avec son dictionnaire, et n'envoie à l'invité ni son chevalet ni 
 3. Vérifier : `https://grullier.alwaysdata.net/scrabble-relay` affiche « Relais Scrabble FR ».
 
 Le relais écoute sur `$IP:$PORT` fournis par alwaysdata ; les WebSockets passent par le même site.
+
+Journal en direct : `server/logs.sh` (Ctrl+C pour quitter). Il ne contient que des événements
+et des codes de partie : ni noms, ni adresses IP, ni contenu des coups.
