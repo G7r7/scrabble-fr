@@ -1091,9 +1091,30 @@ export class App {
     btn.setAttribute('aria-label', z > 1 ? 'Dézoomer le plateau' : 'Zoomer le plateau');
   }
 
+  /**
+   * Zoom définitif (une seule mise en page), adouci par une animation FLIP : le plateau part de là où il
+   * est affiché (éventuellement agrandi par l'aperçu du pincement) et glisse vers sa nouvelle place,
+   * par une simple transformation que la carte graphique calcule sans recalculer la page.
+   */
+  private zoomTo(z: number, x?: number, y?: number, fx?: number, fy?: number) {
+    const board = this.el.board;
+    const from = board.getBoundingClientRect();
+    board.style.transform = '';
+    board.classList.remove('zooming');
+    this.setZoom(z, x, y, fx, fy);
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const to = board.getBoundingClientRect();
+    if (!to.width || (Math.abs(from.left - to.left) < 1 && Math.abs(from.top - to.top) < 1 && Math.abs(from.width - to.width) < 1)) return;
+    board.animate([
+      { transformOrigin: '0 0', transform: `translate(${from.left - to.left}px, ${from.top - to.top}px) scale(${from.width / to.width})` },
+      { transformOrigin: '0 0', transform: 'none' },
+    ], { duration: 220, easing: 'cubic-bezier(0.2, 0.8, 0.3, 1)' });
+  }
+
   private bindZoom() {
     const sc = $(this.root, '#boardScroll');
-    $(this.root, '#zoomBtn').addEventListener('click', () => this.setZoom(this.zoom > 1 ? 1 : App.ZOOM_STEP));
+    const board = this.el.board;
+    $(this.root, '#zoomBtn').addEventListener('click', () => this.zoomTo(this.zoom > 1 ? 1 : App.ZOOM_STEP));
 
     // Double-tap sur une case vide (sans lettre sélectionnée) : zoome / dézoome à cet endroit.
     let lastTap = { t: 0, x: 0, y: 0 };
@@ -1102,33 +1123,55 @@ export class App {
       if (!cell || cell.querySelector('.tile') || this.selected !== null) { lastTap.t = 0; return; }
       const now = performance.now();
       if (now - lastTap.t < 350 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 30) {
-        this.setZoom(this.zoom > 1 ? 1 : App.ZOOM_STEP, e.clientX, e.clientY);
+        this.zoomTo(this.zoom > 1 ? 1 : App.ZOOM_STEP, e.clientX, e.clientY);
         lastTap.t = 0;
       } else lastTap = { t: now, x: e.clientX, y: e.clientY };
     });
 
-    // Pincer à deux doigts : zoom continu, le plateau suit le milieu des deux doigts.
-    let pinch: { d0: number; z0: number; fx: number; fy: number } | null = null;
+    // Pincer à deux doigts : pendant le geste, simple aperçu par transformation (aucune mise en page) ;
+    // le vrai zoom n'est appliqué qu'au lâcher.
+    let pinch: { d0: number; z0: number; fx: number; fy: number; b0: DOMRect; z: number; x: number; y: number } | null = null;
+    let frame = 0;
     const mid = (t: TouchList) => ({
       x: (t[0].clientX + t[1].clientX) / 2, y: (t[0].clientY + t[1].clientY) / 2,
       d: Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY),
     });
+    const preview = () => {
+      frame = 0;
+      if (!pinch) return;
+      const { b0, z, x, y, fx, fy } = pinch;
+      const k = z / this.zoom;
+      board.style.transform = `translate(${x - b0.left - k * fx * b0.width}px, ${y - b0.top - k * fy * b0.height}px) scale(${k})`;
+    };
     sc.addEventListener('touchstart', (e) => {
       if (e.touches.length !== 2) return;
       const m = mid(e.touches);
-      const b = this.el.board.getBoundingClientRect();
-      pinch = { d0: Math.max(m.d, 1), z0: this.zoom, fx: (m.x - b.left) / b.width, fy: (m.y - b.top) / b.height };
+      const b0 = board.getBoundingClientRect();
+      pinch = {
+        d0: Math.max(m.d, 1), z0: this.zoom, fx: (m.x - b0.left) / b0.width, fy: (m.y - b0.top) / b0.height,
+        b0, z: this.zoom, x: m.x, y: m.y,
+      };
+      board.classList.add('zooming');
       this.pinching = true;
     }, { passive: true });
     sc.addEventListener('touchmove', (e) => {
       if (!pinch || e.touches.length !== 2) return;
       e.preventDefault();
       const m = mid(e.touches);
-      this.setZoom(pinch.z0 * (m.d / pinch.d0), m.x, m.y, pinch.fx, pinch.fy);
+      // Un peu de jeu au-delà des limites pendant le geste ; on revient dans les bornes au lâcher.
+      pinch.z = Math.min(App.ZOOM_MAX * 1.15, Math.max(0.85, pinch.z0 * (m.d / pinch.d0)));
+      pinch.x = m.x;
+      pinch.y = m.y;
+      frame ||= requestAnimationFrame(preview);
     }, { passive: false });
     const stop = (e: TouchEvent) => {
       if (e.touches.length >= 2) return;
-      pinch = null;
+      if (pinch) {
+        if (frame) { cancelAnimationFrame(frame); frame = 0; }
+        const p = pinch;
+        pinch = null;
+        this.zoomTo(p.z, p.x, p.y, p.fx, p.fy);
+      }
       if (!e.touches.length) this.pinching = false;
     };
     sc.addEventListener('touchend', stop);

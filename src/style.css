@@ -135,6 +135,8 @@ html, body { height: 100%; overflow: hidden; overscroll-behavior: none; }
 }
 .app .zoom-btn[aria-pressed] { color: var(--ink); }
 @media (hover: hover) and (pointer: fine) { .zoom-btn { display: none; } }
+/* Pendant le pincement : aperçu par transformation seulement (calculé par la carte graphique). */
+.board.zooming { transform-origin: 0 0; will-change: transform; }
 .scorebox { grid-area: scores; }
 .preview { grid-area: preview; }
 .rack { grid-area: rack; }
