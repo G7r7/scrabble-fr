@@ -6,6 +6,7 @@ import {
   saveGame, winnerText, type GameState, type HistoryEntry, type Variant,
 } from '../game/game';
 import type { Action } from '../game/remote';
+import { THEMES, THEME_MULT, applyTheme, themeInfo, themeOf, type ThemeId } from '../game/themes';
 import type { Placement } from '../game/types';
 import { CODE_TAKEN, GameLink, isCode, newCode, newToken, normalizeCode } from '../net/online';
 import { cleanName, type GameOptions, type ServerMsg } from '../net/protocol';
@@ -31,6 +32,7 @@ function lsDel(k: string) { try { localStorage.removeItem(k); } catch { /* rien 
 /** Jeton secret du joueur pour une partie en ligne (suffixé du code de la partie). */
 const TOKEN_KEY = 'scrabble-fr-jeton-';
 const VARIANT_KEY = 'scrabble-fr-variante';
+const THEME_KEY = 'scrabble-fr-theme';
 const variantOf = (v: unknown): Variant | null => (v === 'challenge' || v === 'hardcore' ? v : null);
 /** Première lettre en minuscule (pour enchaîner « Nom : mot refusé… »). */
 const lcFirst = (t: string) => t.charAt(0).toLowerCase() + t.slice(1);
@@ -76,7 +78,7 @@ export class App {
 
   private el = {} as Record<
     'board' | 'rack' | 'preview' | 'scores' | 'bag' | 'history' | 'actions' | 'dict' | 'status' | 'level' |
-    'levelWrap' | 'onlineBtn' | 'newGame' | 'onlineInfo' | 'onlineBody' | 'sfxBtn' | 'musicBtn' | 'notifBtn' | 'variant',
+    'levelWrap' | 'onlineBtn' | 'newGame' | 'onlineInfo' | 'onlineBody' | 'sfxBtn' | 'musicBtn' | 'notifBtn' | 'variant' | 'fantasy',
     HTMLElement
   >;
 
@@ -85,7 +87,7 @@ export class App {
   async start() {
     this.root.innerHTML = TEMPLATE;
     for (const k of ['board', 'rack', 'preview', 'scores', 'bag', 'history', 'actions', 'dict', 'status', 'level',
-      'levelWrap', 'onlineBtn', 'newGame', 'onlineInfo', 'onlineBody', 'sfxBtn', 'musicBtn', 'notifBtn', 'variant'] as const) {
+      'levelWrap', 'onlineBtn', 'newGame', 'onlineInfo', 'onlineBody', 'sfxBtn', 'musicBtn', 'notifBtn', 'variant', 'fantasy'] as const) {
       this.el[k] = $(this.root, `#${k}`);
     }
     this.buildBoard();
@@ -102,9 +104,10 @@ export class App {
     loading.remove();
 
     const saved = loadGame();
-    this.game = saved && !saved.over ? saved : newGame(this.readLevel(), null, { variant: this.variantPref() });
+    this.game = saved && !saved.over ? saved : newGame(this.readLevel(), null, this.prefs());
     (this.el.level as HTMLSelectElement).value = this.game.level;
     (this.el.variant as HTMLSelectElement).value = this.variantPref() ?? 'normal';
+    (this.el.fantasy as HTMLSelectElement).value = this.themePref() ?? '';
     this.seen = this.game.history.length;
     this.syncRack();
     this.render();
@@ -174,12 +177,15 @@ export class App {
   }
 
   private variantPref(): Variant | null { return variantOf(lsGet(VARIANT_KEY)); }
+  private themePref(): ThemeId | null { return themeOf(lsGet(THEME_KEY)); }
+  /** Options de la prochaine partie contre l'ordinateur. */
+  private prefs() { return { variant: this.variantPref(), theme: this.themePref() }; }
 
   private startNewGame() {
     if (this.mode !== 'solo') return this.quitOnline();
     if (this.busy) return;
     if (!this.game.over && this.game.history.length > 0 && !confirm('Abandonner la partie en cours ?')) return;
-    this.game = newGame((this.el.level as HTMLSelectElement).value as Level, null, { variant: this.variantPref() });
+    this.game = newGame((this.el.level as HTMLSelectElement).value as Level, null, this.prefs());
     this.resetBoardUi();
     if (this.game.variant) this.setStatus(`Nouvelle partie en mode ${variantLabel(this.game.variant)}.`);
     this.afterTurn();
@@ -225,6 +231,12 @@ export class App {
       (this.mode !== 'online' || !!this.link?.connected);
   }
 
+  /** Points du dernier coup joué (bonus du thème compris). */
+  private lastPlayScore() {
+    for (let i = this.game.history.length - 1; i >= 0; i--) if (this.game.history[i].kind === 'play') return this.game.history[i].score;
+    return 0;
+  }
+
   private get opp(): 0 | 1 { return this.me === 0 ? 1 : 0; }
 
   private async play() {
@@ -261,7 +273,7 @@ export class App {
     }
     commit();
     playMove(g, move);
-    this.setStatus(`Vous marquez ${res.score} points.`);
+    this.setStatus(`Vous marquez ${this.lastPlayScore()} points.`);
     this.afterTurn();
   }
 
@@ -333,10 +345,10 @@ export class App {
     if (Math.random() < odds) {
       challenge(g, invalid);
       this.setStatus(invalid.length ? 'L’ordinateur conteste… et il a raison ! Vous perdez votre tour.'
-        : `L’ordinateur conteste… à tort ! Vous marquez ${p.move.score} points et il perd son tour.`, !!invalid.length);
+        : `L’ordinateur conteste… à tort ! Vous marquez ${this.lastPlayScore()} points et il perd son tour.`, !!invalid.length);
     } else {
       accept(g);
-      this.setStatus(`L’ordinateur accepte : vous marquez ${p.move.score} points.`);
+      this.setStatus(`L’ordinateur accepte : vous marquez ${this.lastPlayScore()} points.`);
     }
     this.afterTurn();
   }
@@ -349,7 +361,7 @@ export class App {
     const p = g.proposal!;
     if (kind === 'accept') {
       accept(g);
-      this.setStatus(`Coup accepté : l’ordinateur marque ${p.move.score} points.`);
+      this.setStatus(`Coup accepté : l’ordinateur marque ${this.lastPlayScore()} points.`);
       return this.afterTurn();
     }
     this.busy = true;
@@ -440,7 +452,7 @@ export class App {
         this.setStatus(`L’ordinateur propose ${d.move.words.map((w) => w.word).join(', ')} pour ${d.move.score} points : acceptez ou contestez !`);
       } else if (d.kind === 'play') {
         playMove(g, d.move);
-        this.setStatus(`L'ordinateur joue ${d.move.words[0].word} pour ${d.move.score} points.`);
+        this.setStatus(`L'ordinateur joue ${d.move.words[0].word} pour ${this.lastPlayScore()} points.`);
       } else if (d.kind === 'exchange' && g.bag.length >= RACK_SIZE) {
         exchange(g, d.letters);
         this.setStatus(`L'ordinateur échange ${d.letters.length} lettre${d.letters.length > 1 ? 's' : ''}.`);
@@ -509,12 +521,12 @@ export class App {
     $(this.root, '#endDialog').classList.remove('open');
   }
 
-  private createGame(variant: Variant | null) {
+  private createGame(options: GameOptions) {
     this.closeLinks();
     const code = newCode(), token = newToken();
     lsSet(`${TOKEN_KEY}${code}`, token);
     this.lobby('hosting', code, false);
-    this.connect(code, token, { variant });
+    this.connect(code, token, options);
   }
 
   private joinGame(code: string) {
@@ -543,7 +555,7 @@ export class App {
       },
       onMessage: (m) => this.onServerMsg(m),
       onError: (text, fatal) => {
-        if (text === CODE_TAKEN && create && this.mode === 'solo') return this.createGame(create.variant);
+        if (text === CODE_TAKEN && create && this.mode === 'solo') return this.createGame(create);
         if (fatal && this.mode === 'solo') { this.closeLinks(); this.lobby('error', text); }
         else { this.busy = false; this.setStatus(text, true); this.render(); }
       },
@@ -627,7 +639,7 @@ export class App {
     this.me = 0;
     setUrlCode(null);
     const saved = loadGame();
-    this.game = saved && !saved.over ? saved : newGame(this.readLevel(), null, { variant: this.variantPref() });
+    this.game = saved && !saved.over ? saved : newGame(this.readLevel(), null, this.prefs());
     this.resetBoardUi();
     this.setStatus('Retour à la partie contre l’ordinateur.');
     this.afterTurn();
@@ -641,6 +653,7 @@ export class App {
         <p class="muted">Affrontez quelqu’un à distance : créez une partie et envoyez-lui le lien.</p>
         <label class="field">Votre nom<input id="olName" maxlength="16" autocomplete="nickname" value="${name}" placeholder="Votre nom" /></label>
         ${arg ? '' : `<fieldset class="variants"><legend>Mode de jeu</legend>${this.variantRadios('olVariant', this.variantPref())}</fieldset>
+        <label class="field">Fantasy : thème (ses mots rapportent ×${THEME_MULT})<select id="olTheme">${this.themeOptions(this.themePref())}</select></label>
         <button class="btn primary wide" data-ol="create">Créer une partie</button><div class="sep"><span>ou</span></div>`}
         <form class="check" data-ol="join-form">
           <input id="olCode" maxlength="7" placeholder="Code de la partie" autocomplete="off" autocapitalize="characters" value="${esc(arg)}" />
@@ -676,6 +689,11 @@ export class App {
     body.querySelector<HTMLInputElement>(view === 'menu' && !name ? '#olName' : '#olCode')?.focus();
   }
 
+  private themeOptions(current: ThemeId | null) {
+    return `<option value="">Aucun</option>` + THEMES.map((t) =>
+      `<option value="${t.id}" ${current === t.id ? 'selected' : ''}>${t.icons[0]} ${t.label}</option>`).join('');
+  }
+
   private variantRadios(name: string, current: Variant | null) {
     return VARIANTS.map((v) => `<label class="variant v-${v.id}"><input type="radio" name="${name}" value="${v.id}"
       ${(current ?? 'normal') === v.id ? 'checked' : ''} /><span><b>${v.label}</b><small>${v.help}</small></span></label>`).join('');
@@ -703,8 +721,10 @@ export class App {
       if (a === 'create') {
         if (!saveName()) return;
         const v = variantOf(body.querySelector<HTMLInputElement>('input[name="olVariant"]:checked')?.value);
+        const theme = themeOf(body.querySelector<HTMLSelectElement>('#olTheme')?.value);
         lsSet(VARIANT_KEY, v ?? 'normal');
-        this.createGame(v);
+        lsSet(THEME_KEY, theme ?? '');
+        this.createGame({ variant: v, theme });
       }
       else if (a === 'close' || a === 'cancel') cancel();
       else if (a === 'menu') this.lobby('menu');
@@ -863,6 +883,19 @@ export class App {
         return this.setStatus(`Mode ${info.label} : ${info.help}`);
       }
       this.setStatus(`Mode ${info.label} pour la prochaine partie : ${info.help}`);
+    });
+    this.el.fantasy.addEventListener('change', () => {
+      const t = themeOf((this.el.fantasy as HTMLSelectElement).value);
+      lsSet(THEME_KEY, t ?? '');
+      if (this.mode !== 'solo') return;
+      const what = t ? `Fantasy « ${themeInfo(t).label} » : les mots du thème rapportent ×${THEME_MULT}` : 'Sans thème';
+      if (!this.game.history.length && !this.game.proposal && !this.busy) {
+        if (t) this.game.theme = t; else delete this.game.theme;
+        saveGame(this.game);
+        this.render();
+        return this.setStatus(`${what}.`);
+      }
+      this.setStatus(`${what}, à la prochaine partie.`);
     });
 
     this.el.dict.addEventListener('change', (e) => {
@@ -1263,6 +1296,8 @@ export class App {
     const last = new Set(g.lastMove.map(([r, c]) => r * SIZE + c));
     const pend = new Map(this.pending.map((p) => [p.r * SIZE + p.c, p]));
     const prop = new Map((g.proposal?.move.placements ?? []).map((p) => [p.r * SIZE + p.c, p]));
+    const themed = new Set(g.themeCells ?? []);
+    this.renderFantasy(g.theme ?? null);
     const cells = this.el.board.children;
     for (let r = 0; r < SIZE; r++) {
       for (let c = 0; c < SIZE; c++) {
@@ -1270,7 +1305,8 @@ export class App {
         const t = g.board[r][c];
         const p = pend.get(r * SIZE + c);
         cell.querySelector('.tile')?.remove();
-        if (t) cell.insertAdjacentHTML('beforeend', this.tileHtml(t.letter, t.blank, last.has(r * SIZE + c) ? 'last' : ''));
+        if (t) cell.insertAdjacentHTML('beforeend', this.tileHtml(t.letter, t.blank,
+          `${last.has(r * SIZE + c) ? 'last' : ''} ${themed.has(r * SIZE + c) ? 'themed' : ''}`));
         else if (p) cell.insertAdjacentHTML('beforeend', this.tileHtml(p.letter === BLANK ? p.assigned : p.letter, p.letter === BLANK, 'pending', p.id));
         else if (prop.has(r * SIZE + c)) { const q = prop.get(r * SIZE + c)!; cell.insertAdjacentHTML('beforeend', this.tileHtml(q.letter, q.blank, 'proposed')); }
         cell.classList.toggle('target', this.selected !== null && !t && !p && !prop.has(r * SIZE + c));
@@ -1294,7 +1330,8 @@ export class App {
       <div class="player ${turn(this.me)}"><span class="name">${solo ? 'Vous' : `${esc(h.name)} <i class="off">(vous)</i>`}</span><span class="pts" data-p="${this.me}">${this.shownScore(this.me)}</span></div>
       <div class="player ${turn(this.opp)}"><span class="name">${solo ? 'Ordinateur' : esc(a.name)}${oppTag}</span><span class="pts" data-p="${this.opp}">${this.shownScore(this.opp)}</span></div>`;
     this.el.bag.innerHTML = `${g.bag.length} jeton${g.bag.length > 1 ? 's' : ''} dans le sac` +
-      (g.variant ? ` · <span class="variant-tag v-${g.variant}">${variantLabel(g.variant)}</span>` : '');
+      (g.variant ? ` · <span class="variant-tag v-${g.variant}">${variantLabel(g.variant)}</span>` : '') +
+      (g.theme ? ` · <span class="variant-tag theme-tag">${themeInfo(g.theme).icons[0]} ${themeInfo(g.theme).label}</span>` : '');
 
     this.el.history.innerHTML = g.history.length
       ? [...g.history].reverse().map((e) => `<li class="${e.player === this.me ? 'me' : 'ai'} k-${e.kind}">
@@ -1319,6 +1356,7 @@ export class App {
 
     this.el.levelWrap.hidden = !solo;
     $(this.root, '#variantWrap').hidden = !solo;
+    $(this.root, '#fantasyWrap').hidden = !solo;
     this.el.onlineBtn.hidden = !solo;
     this.el.newGame.textContent = solo ? 'Nouvelle partie' : 'Quitter';
     this.el.onlineInfo.hidden = solo;
@@ -1331,6 +1369,30 @@ export class App {
     this.renderDict();
     this.renderBadge();
     void this.updatePreview();
+  }
+
+  /** Mode fantasy : couleurs du thème, icône au centre et petites icônes qui flottent sur le plateau. */
+  private fantasy: ThemeId | null | undefined;
+  private renderFantasy(theme: ThemeId | null) {
+    if (theme === this.fantasy) return;
+    this.fantasy = theme;
+    const app = $(this.root, '.app');
+    if (theme) app.dataset.fantasy = theme; else delete app.dataset.fantasy;
+    const star = this.el.board.querySelector<HTMLElement>('.cell.star .label');
+    if (star) star.textContent = theme ? themeInfo(theme).icons[0] : '★';
+    const wrap = $(this.root, '.board-wrap');
+    wrap.querySelector('.fantasy-sky')?.remove();
+    if (!theme) return;
+    const icons = themeInfo(theme).icons;
+    const sky = document.createElement('div');
+    sky.className = 'fantasy-sky';
+    sky.setAttribute('aria-hidden', 'true');
+    sky.innerHTML = Array.from({ length: 16 }, (_, i) => {
+      const style = `left:${Math.random() * 100}%;--d:${9 + Math.random() * 9}s;--delay:${-Math.random() * 18}s;` +
+        `--s:${0.8 + Math.random() * 1.1};--x:${(Math.random() - 0.5) * 60}px`;
+      return `<span style="${style}">${icons[i % icons.length]}</span>`;
+    }).join('');
+    wrap.appendChild(sky);
   }
 
   private shownScore(i: 0 | 1) { return (this.shown ?? [this.game.players[0].score, this.game.players[1].score])[i]; }
@@ -1402,14 +1464,17 @@ export class App {
     const res = evaluatePlacement(this.game.board, this.placements());
     if (!res.ok) { out.innerHTML = `<span class="bad">${esc(res.error)}</span>`; return setPlayable(false); }
     const words = res.words.map((w) => w.word);
-    out.innerHTML = `<span class="words">${words.join(' · ')}</span><span class="score">${res.score} pts</span>`;
+    // Mode fantasy : en mode normal, les mots du thème sont signalés (et comptés double) dès l'aperçu.
+    const shown = this.game.variant ? null : applyTheme(this.game.theme, { placements: [], words: res.words, score: res.score });
+    const label = (w: string) => (shown?.words.find((x) => x.word === w)?.themed ? `<b class="themed-word">✦ ${w}</b>` : w);
+    out.innerHTML = `<span class="words">${words.map(label).join(' · ')}</span><span class="score">${shown?.score ?? res.score} pts</span>`;
     // Modes challenge et hardcore : on ne sait pas si le mot est valide avant de le jouer.
     if (this.game.variant) return setPlayable(this.canAct());
     setPlayable(false);
     const invalid = await this.engine.invalidWords(words);
     if (token !== this.previewToken) return;
     if (invalid.length) {
-      out.innerHTML = `<span class="words">${words.map((w) => (invalid.includes(w) ? `<s class="bad">${w}</s>` : w)).join(' · ')}</span>` +
+      out.innerHTML = `<span class="words">${words.map((w) => (invalid.includes(w) ? `<s class="bad">${w}</s>` : label(w))).join(' · ')}</span>` +
         `<span class="bad">absent du dictionnaire${this.mode === 'online' ? ' (le serveur tranchera)' : ''}</span>`;
       // En ligne, seul le dictionnaire du serveur fait foi : on peut tenter le coup.
       setPlayable(this.mode === 'online' && this.canAct());
@@ -1448,6 +1513,9 @@ const TEMPLATE = `
     </label>
     <label class="level" id="variantWrap">Mode
       <select id="variant">${VARIANTS.map((v) => `<option value="${v.id}" title="${v.help}">${v.label}</option>`).join('')}</select>
+    </label>
+    <label class="level" id="fantasyWrap">Fantasy
+      <select id="fantasy"><option value="">Aucun thème</option>${THEMES.map((t) => `<option value="${t.id}">${t.icons[0]} ${t.label}</option>`).join('')}</select>
     </label>
     <button class="btn primary" id="onlineBtn">Jouer en ligne</button>
     <button class="btn" id="newGame">Nouvelle partie</button>

@@ -1,9 +1,10 @@
-import { BLANK, RACK_SIZE } from './constants';
+import { BLANK, RACK_SIZE, SIZE } from './constants';
 import { applyPlacements, emptyBoard } from './board';
 import { draw, newBag, shuffle } from './bag';
 import { rackValue } from './rules';
 import type { Board, FormedWord, Move } from './types';
 import type { Level } from '../ai/player';
+import { applyTheme, type ThemeId } from './themes';
 
 export type Variant = 'challenge' | 'hardcore';
 export const VARIANTS: { id: Variant | 'normal'; label: string; help: string }[] = [
@@ -47,6 +48,10 @@ export interface GameState {
    * - hardcore : chaque coup est contrôlé d'office ; un mot refusé coûte 10 points et le tour.
    */
   variant?: Variant;
+  /** Mode fantasy : thème de la partie (ses mots rapportent double). */
+  theme?: ThemeId;
+  /** Mode fantasy : cases des mots du thème déjà joués (elles chatoient). */
+  themeCells?: number[];
   /** Mode challenge : coup posé que l'adversaire doit accepter ou contester. */
   proposal?: Proposal | null;
 }
@@ -54,7 +59,7 @@ export interface GameState {
 export const HUMAN = 0, AI = 1;
 const MAX_SCORELESS = 6;
 
-export function newGame(level: Level, online?: { names: [string, string] } | null, opts: { variant?: Variant | null } = {}): GameState {
+export function newGame(level: Level, online?: { names: [string, string] } | null, opts: { variant?: Variant | null; theme?: ThemeId | null } = {}): GameState {
   const bag = newBag();
   const [n0, n1] = online?.names ?? ['Vous', 'Ordinateur'];
   const players: [Player, Player] = [
@@ -67,6 +72,7 @@ export function newGame(level: Level, online?: { names: [string, string] } | nul
     scorelessTurns: 0, over: false, history: [], level, lastMove: [],
     ...(online ? { online: true } : {}),
     ...(opts.variant ? { variant: opts.variant } : {}),
+    ...(opts.theme ? { theme: opts.theme } : {}),
   };
 }
 
@@ -83,6 +89,7 @@ function nextTurn(s: GameState) {
 }
 
 export function playMove(s: GameState, move: Move) {
+  move = applyTheme(s.theme, move);
   const p = s.players[s.current];
   removeFromRack(p.rack, move.placements.map((x) => (x.blank ? BLANK : x.letter)));
   applyPlacements(s.board, move.placements);
@@ -91,7 +98,12 @@ export function playMove(s: GameState, move: Move) {
   s.scorelessTurns = 0;
   s.lastMove = move.placements.map((x) => [x.r, x.c]);
   s.lastWords = move.words;
-  const words = move.words.map((w) => w.word).join(', ');
+  const words = move.words.map((w) => (w.themed ? `${w.word} ✦` : w.word)).join(', ');
+  if (s.theme) {
+    const cells = new Set(s.themeCells ?? []);
+    for (const w of move.words) if (w.themed) for (const [r, c] of w.cells) cells.add(r * SIZE + c);
+    s.themeCells = [...cells];
+  }
   s.history.push({
     player: s.current, kind: 'play', score: move.score,
     text: move.placements.length === RACK_SIZE ? `${words} — Scrabble !` : words,

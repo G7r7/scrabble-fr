@@ -9,7 +9,8 @@
     "build": "tsc --noEmit && tsc --noEmit -p server && vite build",
     "preview": "vite preview",
     "server:build": "esbuild server/server.ts --bundle --platform=node --format=esm --target=node22 --external:ws --outfile=server/dist/server.mjs",
-    "server": "npm run server:build && node server/dist/server.mjs"
+    "server": "npm run server:build && node server/dist/server.mjs",
+    "themes": "node scripts/build-themes.mjs"
   },
   "license": "ISC",
   "devDependencies": {

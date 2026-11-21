@@ -3,9 +3,10 @@
 // (sans le chevalet adverse ni l'ordre du sac).
 import type { GameState, Variant } from '../game/game';
 import type { Action } from '../game/remote';
+import type { ThemeId } from '../game/themes';
 
 /** Options choisies par la personne qui crée la partie. */
-export interface GameOptions { variant: Variant | null }
+export interface GameOptions { variant: Variant | null; theme?: ThemeId | null }
 
 export type ClientMsg =
   /** Envoyé à chaque connexion ; `options` n'est lu qu'à la création de la partie. */

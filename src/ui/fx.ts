@@ -144,6 +144,12 @@ export class Sound {
     const o = this.tone(150, t, 0.25, 'sawtooth', 0.15);
     o.frequency.exponentialRampToValueAtTime(90, t + 0.25);
   }
+  /** Mot du thème (mode fantasy) : pluie de notes cristallines. */
+  sparkle() {
+    const t = this.now();
+    if (t === null) return;
+    [88, 91, 95, 100, 103].forEach((n, i) => this.tone(midi(n), t + 0.05 + i * 0.05, 0.25, 'sine', 0.1));
+  }
   /** « CHALLENGE ! » : roulement de tambour puis coup de cymbale grave. */
   challenge() {
     const t = this.now();
@@ -324,7 +330,9 @@ export class Fx {
       for (const t of tiles) t.classList.add('count');
       const [lr, lc] = w.cells[w.cells.length - 1];
       const last = this.tileAt(board, lr, lc);
-      if (last) this.float(`${w.word} +${w.score}`, last.getBoundingClientRect(), 'word');
+      if (w.themed) for (const t of tiles) t.classList.add('themed');
+      if (last) this.float(w.themed ? `✦ ${w.word} ×2 +${w.score}` : `${w.word} +${w.score}`, last.getBoundingClientRect(), w.themed ? 'word themed' : 'word');
+      if (w.themed) this.sound.sparkle();
       this.sound.tick(k);
       await wait(Fx.WORD_STEP);
       for (const t of tiles) t.classList.remove('count');

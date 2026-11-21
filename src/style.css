@@ -552,3 +552,81 @@ input.invalid { border-color: var(--bad); outline: 1px solid var(--bad); }
   .challenge-btn span, .tile.proposed, .fx-stamp-title span, .fx-stamp-sub, .fx-stamp { animation: none; opacity: 1; }
   .fx-stamp-sub { transform: rotate(4deg); }
 }
+
+/* ---------- Mode fantasy : plateau aux couleurs du thème ---------- */
+.app[data-fantasy] {
+  --label-light: #3b2a45; --label-dark: #ffffff;
+}
+.app[data-fantasy="culture"] {
+  --f1: #3b0f5c; --f2: #8e1b5a; --f3: #d4a017; --fglow: #f5c542;
+  --cell: #f7eedb; --mt: #c2185b; --md: #f3a6c8; --lt: #6a1b9a; --ld: #c9a0e0;
+}
+.app[data-fantasy="jeux"] {
+  --f1: #0b0f3a; --f2: #5b16a8; --f3: #00b3ff; --fglow: #ff3be0;
+  --cell: #e9edff; --mt: #ff2bd6; --md: #ffa6f2; --lt: #0091ea; --ld: #8fdcff;
+}
+.app[data-fantasy="sports"] {
+  --f1: #0b5d2a; --f2: #1f9d4c; --f3: #f2c200; --fglow: #ffe066;
+  --cell: #f4f7ea; --mt: #e65100; --md: #ffbf80; --lt: #1565c0; --ld: #9cc9f5;
+}
+.app[data-fantasy="nature"] {
+  --f1: #14452a; --f2: #2e8b57; --f3: #e8a33c; --fglow: #ffd27a;
+  --cell: #f4f0da; --mt: #c2410c; --md: #f6b1a5; --lt: #00796b; --ld: #8fd3c9;
+}
+.app[data-fantasy="medecine"] {
+  --f1: #0b3b5c; --f2: #0e8a9a; --f3: #e8f7ff; --fglow: #6ee7f9;
+  --cell: #f2fbff; --mt: #d32f2f; --md: #f5a3a3; --lt: #0277bd; --ld: #93d6f7;
+}
+.app[data-fantasy] .board {
+  background: linear-gradient(125deg, var(--f1), var(--f2), var(--f3), var(--f2), var(--f1));
+  background-size: 400% 400%; padding: 6px; gap: 3px;
+  animation: fantasy-flow 14s ease-in-out infinite, fantasy-glow 3.2s ease-in-out infinite alternate;
+}
+.app[data-fantasy] .cell { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.25); }
+.app[data-fantasy] :is(.b-MT, .b-MD, .b-LT, .b-LD) {
+  background-image: linear-gradient(120deg, transparent 30%, rgba(255, 255, 255, 0.45) 50%, transparent 70%);
+  background-size: 250% 100%; animation: fantasy-sheen 5s linear infinite;
+}
+.app[data-fantasy] .star .label { font-size: 5.5cqi; animation: fantasy-bob 2.4s ease-in-out infinite; }
+@keyframes fantasy-flow { 0%, 100% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } }
+@keyframes fantasy-glow {
+  from { box-shadow: 0 0 0 2px color-mix(in srgb, var(--fglow), transparent 40%), 0 0 14px -2px var(--fglow); }
+  to { box-shadow: 0 0 0 3px var(--fglow), 0 0 34px 2px var(--fglow); }
+}
+@keyframes fantasy-sheen { from { background-position: 150% 0; } to { background-position: -150% 0; } }
+@keyframes fantasy-bob { 0%, 100% { transform: translateY(0) scale(1); } 50% { transform: translateY(-6%) scale(1.12); } }
+
+/* Petites icônes du thème qui montent doucement par-dessus le plateau. */
+.fantasy-sky { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 2; }
+.fantasy-sky span {
+  position: absolute; bottom: -10%; font-size: calc(1.1rem * var(--s)); opacity: 0;
+  animation: fantasy-rise var(--d) linear infinite; animation-delay: var(--delay);
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.25));
+}
+@keyframes fantasy-rise {
+  0% { transform: translate(0, 0) rotate(-10deg); opacity: 0; }
+  10% { opacity: 0.55; }
+  85% { opacity: 0.4; }
+  100% { transform: translate(var(--x), -115cqh) rotate(12deg); opacity: 0; }
+}
+
+/* Mots du thème : tuiles irisées. */
+.tile.themed {
+  background: linear-gradient(120deg, #fff3c4, #ffd1f0, #c9f0ff, #d8ffd1, #fff3c4);
+  background-size: 300% 300%; animation: themed-shimmer 4s ease-in-out infinite;
+  box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.18), 0 0 8px 1px color-mix(in srgb, var(--fglow, #f5c542), transparent 30%);
+}
+.board .tile.themed.pop { animation: tile-drop 0.32s cubic-bezier(0.3, 1.6, 0.5, 1) both, themed-shimmer 4s ease-in-out infinite; }
+@keyframes themed-shimmer { 0%, 100% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } }
+.fx-float.word.themed {
+  background: linear-gradient(90deg, #ff3be0, #f5a623, #00c2ff); font-size: 1.1rem;
+  box-shadow: 0 0 18px rgba(255, 200, 80, 0.8);
+}
+.themed-word { color: #b8860b; }
+.theme-tag { background: linear-gradient(90deg, #8e1b5a, #5b16a8, #0e8a9a); }
+
+@media (prefers-reduced-motion: reduce) {
+  .app[data-fantasy] .board, .app[data-fantasy] :is(.b-MT, .b-MD, .b-LT, .b-LD), .app[data-fantasy] .star .label,
+  .tile.themed { animation: none; }
+  .fantasy-sky { display: none; }
+}

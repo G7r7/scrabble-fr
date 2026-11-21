@@ -3,6 +3,7 @@
 import { newGame, type GameState, type Variant } from '../src/game/game';
 import { applyAction, parseAction, viewFor } from '../src/game/remote';
 import { CLOSE, cleanName, type ServerMsg } from '../src/net/protocol';
+import { themeOf, type ThemeId } from '../src/game/themes';
 
 export type SeatNo = 0 | 1;
 export interface Seat { token: string; name: string; left: boolean }
@@ -10,6 +11,7 @@ export interface Room {
   code: string;
   seats: [Seat, Seat | null];
   variant: Variant | null;
+  theme?: ThemeId | null;
   state: GameState | null;
   /** Dernière activité (création, arrivée d'un joueur, coup joué), en ms. */
   updated: number;
@@ -74,6 +76,7 @@ export class Games {
       if (seat === 0 && !room.state && m.options && typeof m.options === 'object') {
         const v = (m.options as Record<string, unknown>).variant;
         room.variant = v === 'challenge' || v === 'hardcore' ? v : null;
+        room.theme = themeOf((m.options as Record<string, unknown>).theme);
       }
       if (!room.state && room.seats[0].name && room.seats[1]?.name) return this.start(room);
       if (!room.state) return this.io.send(room, seat, { type: 'waiting' });
@@ -109,7 +112,7 @@ export class Games {
 
   private start(room: Room) {
     const [a, b] = room.seats;
-    room.state = newGame('moyen', { names: [a.name, b!.name] }, { variant: room.variant });
+    room.state = newGame('moyen', { names: [a.name, b!.name] }, { variant: room.variant, theme: room.theme });
     room.updated = this.now();
     this.io.changed();
     this.broadcast(room);
