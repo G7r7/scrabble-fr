@@ -721,15 +721,24 @@ export class App {
     const name = esc(cleanName(lsGet('scrabble-fr-nom')));
     const body = this.el.onlineBody;
     if (view === 'menu') {
+      const variant = this.variantPref() ?? 'normal', dict = dictOf(lsGet(DICT_KEY)) ?? 'libre';
       body.innerHTML = `
         <h2>Jouer en ligne</h2>
         <p class="muted">Affrontez quelqu’un à distance : créez une partie et envoyez-lui le lien.</p>
         <label class="field">Votre nom<input id="olName" maxlength="16" autocomplete="nickname" value="${name}" placeholder="Votre nom" /></label>
-        ${arg ? '' : `<fieldset class="variants"><legend>Mode de jeu</legend>${this.variantRadios('olVariant', this.variantPref())}</fieldset>
-        <label class="field">Liste de mots<select id="olDict">${DICTS.map((d) =>
-          `<option value="${d.id}" ${(dictOf(lsGet(DICT_KEY)) ?? 'libre') === d.id ? 'selected' : ''}>${d.label} (${d.words} mots)</option>`).join('')}</select></label>
-        <label class="field">Fantasy : thème (ses mots rapportent ×${THEME_MULT})<select id="olTheme">${this.themeOptions(this.themePref())}</select></label>
-        <button class="btn primary wide" data-ol="create">Créer une partie</button><div class="sep"><span>ou</span></div>`}
+        ${arg ? '' : `<section class="setup" aria-label="Nouvelle partie">
+          <h3>Nouvelle partie</h3>
+          <div class="setup-row"><span class="setup-label" id="olModeLabel">Mode</span>
+            <div class="seg" role="radiogroup" aria-labelledby="olModeLabel">${VARIANTS.map((v) => `<label class="seg-opt v-${v.id}">
+              <input type="radio" name="olVariant" value="${v.id}" ${variant === v.id ? 'checked' : ''} /><span>${v.label}</span></label>`).join('')}</div>
+          </div>
+          <p class="setup-help" id="olVariantHelp">${VARIANTS.find((v) => v.id === variant)!.help}</p>
+          <label class="setup-row"><span class="setup-label">Liste</span><select id="olDict">${DICTS.map((d) =>
+            `<option value="${d.id}" ${dict === d.id ? 'selected' : ''}>${d.label} (${d.words} mots)</option>`).join('')}</select></label>
+          <label class="setup-row"><span class="setup-label">Thème</span><select id="olTheme">${this.themeOptions(this.themePref())}</select></label>
+          <button class="btn primary wide" data-ol="create">Créer la partie</button>
+        </section>
+        <div class="sep"><span>ou rejoindre une partie</span></div>`}
         <form class="check" data-ol="join-form">
           <input id="olCode" maxlength="7" placeholder="Code de la partie" autocomplete="off" autocapitalize="characters" value="${esc(arg)}" />
           <button class="btn ${arg ? 'primary' : ''}">Rejoindre</button>
@@ -766,12 +775,7 @@ export class App {
 
   private themeOptions(current: ThemeId | null) {
     return `<option value="">Aucun</option>` + THEMES.map((t) =>
-      `<option value="${t.id}" ${current === t.id ? 'selected' : ''}>${t.icons[0]} ${t.label}</option>`).join('');
-  }
-
-  private variantRadios(name: string, current: Variant | null) {
-    return VARIANTS.map((v) => `<label class="variant v-${v.id}"><input type="radio" name="${name}" value="${v.id}"
-      ${(current ?? 'normal') === v.id ? 'checked' : ''} /><span><b>${v.label}</b><small>${v.help}</small></span></label>`).join('');
+      `<option value="${t.id}" ${current === t.id ? 'selected' : ''}>${t.icons[0]} ${t.label} (mots ×${THEME_MULT})</option>`).join('');
   }
 
   private closeLobby() { $(this.root, '#onlineDialog').classList.remove('open'); }
@@ -825,6 +829,11 @@ export class App {
       this.joinGame(code);
     });
     body.addEventListener('input', (e) => (e.target as HTMLElement).classList.remove('invalid'));
+    body.addEventListener('change', (e) => {
+      const t = e.target as HTMLInputElement;
+      const help = body.querySelector('#olVariantHelp');
+      if (t.name === 'olVariant' && help) help.textContent = VARIANTS.find((v) => v.id === t.value)?.help ?? '';
+    });
   }
 
   // ---------- Tuiles ----------
@@ -1454,7 +1463,7 @@ export class App {
     void this.updatePreview();
   }
 
-  /** Mode fantasy : couleurs du thème, icône au centre et petites icônes qui flottent sur le plateau. */
+  /** Mode fantasy : couleurs du thème et icône au centre (plateau fixe : rien ne bouge pendant la réflexion). */
   private fantasy: ThemeId | null | undefined;
   private renderFantasy(theme: ThemeId | null) {
     if (theme === this.fantasy) return;
@@ -1463,19 +1472,6 @@ export class App {
     if (theme) app.dataset.fantasy = theme; else delete app.dataset.fantasy;
     const star = this.el.board.querySelector<HTMLElement>('.cell.star .label');
     if (star) star.textContent = theme ? themeInfo(theme).icons[0] : '★';
-    const wrap = $(this.root, '.board-wrap');
-    wrap.querySelector('.fantasy-sky')?.remove();
-    if (!theme) return;
-    const icons = themeInfo(theme).icons;
-    const sky = document.createElement('div');
-    sky.className = 'fantasy-sky';
-    sky.setAttribute('aria-hidden', 'true');
-    sky.innerHTML = Array.from({ length: 16 }, (_, i) => {
-      const style = `left:${Math.random() * 100}%;--d:${9 + Math.random() * 9}s;--delay:${-Math.random() * 18}s;` +
-        `--s:${0.8 + Math.random() * 1.1};--x:${(Math.random() - 0.5) * 60}px`;
-      return `<span style="${style}">${icons[i % icons.length]}</span>`;
-    }).join('');
-    wrap.appendChild(sky);
   }
 
   private shownScore(i: 0 | 1) { return (this.shown ?? [this.game.players[0].score, this.game.players[1].score])[i]; }

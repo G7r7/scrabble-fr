@@ -256,7 +256,12 @@ html, body { height: 100%; overflow: hidden; overscroll-behavior: none; }
 .b-LD { background: var(--ld); }
 .star .label { font-size: 4cqi; color: var(--label-light); }
 .cell.target { cursor: pointer; }
-.cell.target:hover, .cell.drop { outline: 2px solid var(--pending); outline-offset: -2px; }
+.cell.target:hover, .cell.drop {
+  /* Double anneau blanc + noir et case jaune : visible sur toutes les couleurs, thèmes et mode sombre compris. */
+  background: #ffd84a !important; background-image: none !important;
+  box-shadow: inset 0 0 0 2px #fff, inset 0 0 0 4px #111 !important; z-index: 1;
+}
+.cell.target:hover .label, .cell.drop .label { color: #111; }
 .cell > .tile { position: absolute; inset: 1px; width: auto; height: auto; }
 
 /* ---------- Tuiles ---------- */
@@ -475,9 +480,7 @@ input.invalid { border-color: var(--bad); outline: 1px solid var(--bad); }
 .tile.proposed {
   background: linear-gradient(160deg, #fff6d8, #f3d98a);
   box-shadow: inset 0 -2px 0 #c9a23a, 0 0 0 2px #e0a10b;
-  animation: proposed 1.2s ease-in-out infinite alternate;
 }
-@keyframes proposed { to { box-shadow: inset 0 -2px 0 #c9a23a, 0 0 0 2px #e0a10b, 0 0 12px 2px rgba(224, 161, 11, 0.6); } }
 .variant-tag { font-weight: 700; padding: 1px 7px; border-radius: 999px; color: #fff; background: #d97706; }
 .variant-tag.v-hardcore { background: #9f1239; }
 
@@ -488,7 +491,7 @@ input.invalid { border-color: var(--bad); outline: 1px solid var(--bad); }
   color: #fff; background: linear-gradient(180deg, #ff5a3c, #c81e1e); border-color: #8f1010;
   text-shadow: 2px 2px 0 #5a0a0a; box-shadow: 0 3px 0 #8f1010;
 }
-.challenge-btn span { display: inline-block; animation: wiggle 0.9s ease-in-out infinite; animation-delay: calc(var(--i) * -0.09s); }
+.challenge-btn span { display: inline-block; animation: wiggle 0.9s ease-in-out 2; animation-delay: calc(var(--i) * -0.09s); }
 .challenge-btn:disabled span { animation: none; }
 .challenge-btn:not(:disabled):hover { filter: brightness(1.08); }
 .challenge-btn:not(:disabled):active { transform: translateY(2px); box-shadow: 0 1px 0 #8f1010; }
@@ -536,18 +539,6 @@ input.invalid { border-color: var(--bad); outline: 1px solid var(--bad); }
   0%, 82% { opacity: 1; }
   100% { opacity: 0; transform: scale(1.06); }
 }
-.variants { border: 0; padding: 0; margin: 0 0 12px; display: grid; gap: 6px; }
-.variants legend { font-weight: 600; margin-bottom: 6px; padding: 0; }
-.variant {
-  display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; cursor: pointer;
-  border: 1px solid var(--line); border-radius: var(--radius);
-}
-.variant:has(input:checked) { border-color: var(--accent); background: color-mix(in srgb, var(--accent), transparent 90%); }
-.variant input { margin-top: 3px; accent-color: var(--accent); }
-.variant span { display: grid; gap: 2px; }
-.variant small { color: var(--muted); font-size: 0.8rem; line-height: 1.3; }
-.variant.v-challenge b { font-family: Bangers, Impact, sans-serif; font-weight: 400; letter-spacing: 0.05em; font-size: 1.1rem; color: #c81e1e; }
-.variant.v-hardcore b { font-family: Bangers, Impact, sans-serif; font-weight: 400; letter-spacing: 0.05em; font-size: 1.1rem; color: #9f1239; }
 @media (prefers-reduced-motion: reduce) {
   .challenge-btn span, .tile.proposed, .fx-stamp-title span, .fx-stamp-sub, .fx-stamp { animation: none; opacity: 1; }
   .fx-stamp-sub { transform: rotate(4deg); }
@@ -579,57 +570,27 @@ input.invalid { border-color: var(--bad); outline: 1px solid var(--bad); }
 }
 .app[data-fantasy] .board {
   background: linear-gradient(125deg, var(--f1), var(--f2), var(--f3), var(--f2), var(--f1));
-  background-size: 400% 400%; padding: 6px; gap: 3px;
-  animation: fantasy-flow 14s ease-in-out infinite, fantasy-glow 3.2s ease-in-out infinite alternate;
+  padding: 6px; gap: 3px;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--fglow), transparent 30%), 0 0 22px -2px var(--fglow);
 }
 .app[data-fantasy] .cell { box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.25); }
 .app[data-fantasy] :is(.b-MT, .b-MD, .b-LT, .b-LD) {
   background-image: linear-gradient(120deg, transparent 30%, rgba(255, 255, 255, 0.45) 50%, transparent 70%);
-  background-size: 250% 100%; animation: fantasy-sheen 5s linear infinite;
 }
-.app[data-fantasy] .star .label { font-size: 5.5cqi; animation: fantasy-bob 2.4s ease-in-out infinite; }
-@keyframes fantasy-flow { 0%, 100% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } }
-@keyframes fantasy-glow {
-  from { box-shadow: 0 0 0 2px color-mix(in srgb, var(--fglow), transparent 40%), 0 0 14px -2px var(--fglow); }
-  to { box-shadow: 0 0 0 3px var(--fglow), 0 0 34px 2px var(--fglow); }
-}
-@keyframes fantasy-sheen { from { background-position: 150% 0; } to { background-position: -150% 0; } }
-@keyframes fantasy-bob { 0%, 100% { transform: translateY(0) scale(1); } 50% { transform: translateY(-6%) scale(1.12); } }
+.app[data-fantasy] .star .label { font-size: 5.5cqi; }
 
-/* Petites icônes du thème qui montent doucement par-dessus le plateau. */
-.fantasy-sky { position: absolute; inset: 0; overflow: hidden; pointer-events: none; z-index: 2; }
-.fantasy-sky span {
-  position: absolute; bottom: -10%; font-size: calc(1.1rem * var(--s)); opacity: 0;
-  animation: fantasy-rise var(--d) linear infinite; animation-delay: var(--delay);
-  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.25));
-}
-@keyframes fantasy-rise {
-  0% { transform: translate(0, 0) rotate(-10deg); opacity: 0; }
-  10% { opacity: 0.55; }
-  85% { opacity: 0.4; }
-  100% { transform: translate(var(--x), -115cqh) rotate(12deg); opacity: 0; }
-}
 
 /* Mots du thème : tuiles irisées. */
 .tile.themed {
   background: linear-gradient(120deg, #fff3c4, #ffd1f0, #c9f0ff, #d8ffd1, #fff3c4);
-  background-size: 300% 300%; animation: themed-shimmer 4s ease-in-out infinite;
   box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.18), 0 0 8px 1px color-mix(in srgb, var(--fglow, #f5c542), transparent 30%);
 }
-.board .tile.themed.pop { animation: tile-drop 0.32s cubic-bezier(0.3, 1.6, 0.5, 1) both, themed-shimmer 4s ease-in-out infinite; }
-@keyframes themed-shimmer { 0%, 100% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } }
 .fx-float.word.themed {
   background: linear-gradient(90deg, #ff3be0, #f5a623, #00c2ff); font-size: 1.1rem;
   box-shadow: 0 0 18px rgba(255, 200, 80, 0.8);
 }
 .themed-word { color: #b8860b; }
 .theme-tag { background: linear-gradient(90deg, #8e1b5a, #5b16a8, #0e8a9a); }
-
-@media (prefers-reduced-motion: reduce) {
-  .app[data-fantasy] .board, .app[data-fantasy] :is(.b-MT, .b-MD, .b-LT, .b-LD), .app[data-fantasy] .star .label,
-  .tile.themed { animation: none; }
-  .fantasy-sky { display: none; }
-}
 
 /* ---------- Écran de challenge ---------- */
 .cs {
@@ -763,3 +724,27 @@ input.invalid { border-color: var(--bad); outline: 1px solid var(--bad); }
 .dict-credits b { color: var(--ink); font-weight: 600; }
 .dict-credits a { color: inherit; }
 .dict-head .muted { display: block; font-size: 0.8rem; margin-top: 2px; }
+
+/* ---------- Création d'une partie en ligne : un seul bloc, lignes alignées ---------- */
+.setup {
+  display: grid; gap: 10px; padding: 14px; border: 1px solid var(--line); border-radius: 14px;
+  background: color-mix(in srgb, var(--accent), transparent 94%);
+}
+.setup h3 { margin: 0; font: 600 0.95rem/1.2 Inter, system-ui, sans-serif; color: var(--ink); }
+.setup-row { display: grid; grid-template-columns: 4.2em minmax(0, 1fr); align-items: center; gap: 10px; font-size: 0.88rem; color: var(--muted); }
+.setup-row select { width: 100%; min-width: 0; font-size: 0.95rem; padding: 7px 8px; }
+.setup-help { margin: -4px 0 0 calc(4.2em + 10px) !important; font-size: 0.8rem; line-height: 1.35; color: var(--muted); }
+.seg {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px; padding: 3px;
+  border: 1px solid var(--line); border-radius: 999px; background: var(--surface);
+}
+.seg-opt { position: relative; }
+.seg-opt input { position: absolute; opacity: 0; pointer-events: none; }
+.seg-opt span {
+  display: block; text-align: center; padding: 6px 4px; border-radius: 999px; cursor: pointer;
+  font-weight: 600; font-size: 0.85rem; color: var(--ink); transition: background 0.15s, color 0.15s;
+}
+.seg-opt input:checked + span { background: var(--accent); color: var(--accent-ink); }
+.seg-opt.v-challenge input:checked + span { background: #c81e1e; color: #fff; }
+.seg-opt.v-hardcore input:checked + span { background: #9f1239; color: #fff; }
+.seg-opt input:focus-visible + span { outline: 2px solid var(--accent); outline-offset: 1px; }
