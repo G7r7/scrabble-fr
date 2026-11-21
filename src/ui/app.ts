@@ -88,6 +88,7 @@ export class App {
     }
     this.buildBoard();
     this.bindEvents();
+    this.bindZoom();
 
     const loading = $(this.root, '#loading');
     try {
@@ -847,6 +848,96 @@ export class App {
     badge.hidden = n <= this.historySeen;
   }
 
+  // ---------- Zoom du plateau (téléphone) ----------
+
+  private zoom = 1;
+  private static readonly ZOOM_MAX = 2.4;
+  private static readonly ZOOM_STEP = 1.8;
+
+  /**
+   * Change le zoom en gardant le point (fx, fy) du plateau — fractions de sa largeur et de sa hauteur —
+   * sous le point (x, y) de l'écran.
+   */
+  private setZoom(z: number, x?: number, y?: number, fx?: number, fy?: number) {
+    const sc = $(this.root, '#boardScroll');
+    const board = this.el.board;
+    z = Math.min(App.ZOOM_MAX, Math.max(1, z));
+    if (z < 1.04) z = 1;
+    const view = sc.getBoundingClientRect();
+    x ??= view.left + view.width / 2;
+    y ??= view.top + view.height / 2;
+    const before = board.getBoundingClientRect();
+    fx ??= (x - before.left) / before.width;
+    fy ??= (y - before.top) / before.height;
+    this.zoom = z;
+    sc.style.setProperty('--zoom', String(z));
+    sc.classList.toggle('zoomed', z > 1);
+    const after = board.getBoundingClientRect();
+    sc.scrollLeft += after.left + fx * after.width - x;
+    sc.scrollTop += after.top + fy * after.height - y;
+    const btn = $(this.root, '#zoomBtn');
+    btn.setAttribute('aria-pressed', String(z > 1));
+    btn.setAttribute('aria-label', z > 1 ? 'Dézoomer le plateau' : 'Zoomer le plateau');
+  }
+
+  private bindZoom() {
+    const sc = $(this.root, '#boardScroll');
+    $(this.root, '#zoomBtn').addEventListener('click', () => this.setZoom(this.zoom > 1 ? 1 : App.ZOOM_STEP));
+
+    // Double-tap sur une case vide (sans lettre sélectionnée) : zoome / dézoome à cet endroit.
+    let lastTap = { t: 0, x: 0, y: 0 };
+    sc.addEventListener('click', (e) => {
+      const cell = (e.target as HTMLElement).closest('.cell');
+      if (!cell || cell.querySelector('.tile') || this.selected !== null) { lastTap.t = 0; return; }
+      const now = performance.now();
+      if (now - lastTap.t < 350 && Math.hypot(e.clientX - lastTap.x, e.clientY - lastTap.y) < 30) {
+        this.setZoom(this.zoom > 1 ? 1 : App.ZOOM_STEP, e.clientX, e.clientY);
+        lastTap.t = 0;
+      } else lastTap = { t: now, x: e.clientX, y: e.clientY };
+    });
+
+    // Pincer à deux doigts : zoom continu, le plateau suit le milieu des deux doigts.
+    let pinch: { d0: number; z0: number; fx: number; fy: number } | null = null;
+    const mid = (t: TouchList) => ({
+      x: (t[0].clientX + t[1].clientX) / 2, y: (t[0].clientY + t[1].clientY) / 2,
+      d: Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY),
+    });
+    sc.addEventListener('touchstart', (e) => {
+      if (e.touches.length !== 2) return;
+      const m = mid(e.touches);
+      const b = this.el.board.getBoundingClientRect();
+      pinch = { d0: Math.max(m.d, 1), z0: this.zoom, fx: (m.x - b.left) / b.width, fy: (m.y - b.top) / b.height };
+      this.pinching = true;
+    }, { passive: true });
+    sc.addEventListener('touchmove', (e) => {
+      if (!pinch || e.touches.length !== 2) return;
+      e.preventDefault();
+      const m = mid(e.touches);
+      this.setZoom(pinch.z0 * (m.d / pinch.d0), m.x, m.y, pinch.fx, pinch.fy);
+    }, { passive: false });
+    const stop = (e: TouchEvent) => {
+      if (e.touches.length >= 2) return;
+      pinch = null;
+      if (!e.touches.length) this.pinching = false;
+    };
+    sc.addEventListener('touchend', stop);
+    sc.addEventListener('touchcancel', stop);
+  }
+
+  /** Deux doigts posés sur le plateau : on ne glisse pas de lettre pendant ce temps. */
+  private pinching = false;
+
+  /** Pendant un glissement sur le plateau zoomé, fait défiler quand la lettre approche d'un bord. */
+  private edgeScroll(x: number, y: number, finger = y) {
+    if (this.zoom <= 1) return;
+    const sc = $(this.root, '#boardScroll');
+    const r = sc.getBoundingClientRect();
+    const m = 40, v = 12;
+    const dx = x < r.left + m ? -v : x > r.right - m ? v : 0;
+    const dy = y < r.top + m ? -v : finger > r.bottom - m ? v : 0;
+    if (dx || dy) sc.scrollBy(dx, dy);
+  }
+
   private bindDrag() {
     /**
      * Géométrie du chevalet relevée au début du glissement (sans décalage) : les autres lettres
@@ -856,6 +947,7 @@ export class App {
     type Drag = {
       id: number; x: number; y: number; src: HTMLElement; ghost: HTMLElement | null; pointer: number;
       fromRack: boolean; rack: RackGeom | null; slot: number | null; over: 'rack' | 'board' | null; cell: number;
+      lastX: number; lastY: number; scrolling: boolean; touch: boolean;
     };
     let drag: Drag | null = null;
 
@@ -900,12 +992,19 @@ export class App {
       d.ghost.dataset.size = String(s);
     };
 
+    /** Au doigt, la lettre tenue flotte au-dessus du pouce pour qu'on voie la case visée ; à la souris, sous le curseur. */
+    const lift = (d: Drag) => {
+      const s = +(d.ghost?.dataset.size ?? 0);
+      return d.touch ? s / 2 + 38 : s * 0.4;
+    };
+
     this.root.addEventListener('pointerdown', (e) => {
       const tileEl = (e.target as HTMLElement).closest<HTMLElement>('.tile[data-id]');
       if (!tileEl || e.button > 0) return;
       drag = {
         id: +tileEl.dataset.id!, x: e.clientX, y: e.clientY, src: tileEl, ghost: null, pointer: e.pointerId,
         fromRack: !!tileEl.closest('#rack'), rack: null, slot: null, over: null, cell: -1,
+        lastX: e.clientX, lastY: e.clientY, scrolling: false, touch: e.pointerType !== 'mouse',
       };
       tileEl.setPointerCapture(e.pointerId);
     });
@@ -913,6 +1012,7 @@ export class App {
     this.root.addEventListener('pointermove', (e) => {
       if (!drag || e.pointerId !== drag.pointer) return;
       const d = drag;
+      if (this.pinching && !d.ghost) { drag = null; return; }
       if (!d.ghost) {
         if (Math.hypot(e.clientX - d.x, e.clientY - d.y) < 6) return;
         // Ranger son chevalet reste possible pendant le tour de l'adversaire.
@@ -941,8 +1041,20 @@ export class App {
         layoutRack(g, slot);
       }
       const s = +(d.ghost.dataset.size ?? d.ghost.offsetWidth);
-      d.ghost.style.transform = `translate(${e.clientX - s / 2}px, ${e.clientY - s * 0.9}px)`;
-      this.highlightDrop(over === 'board' ? e.clientX : -1, e.clientY);
+      d.ghost.style.transform = `translate(${e.clientX - s / 2}px, ${e.clientY - lift(d) - s / 2}px)`;
+      // Point visé = centre de la lettre tenue (au-dessus du pouce), pas le doigt lui-même.
+      d.lastX = e.clientX; d.lastY = e.clientY - lift(d);
+      this.highlightDrop(over === 'board' ? d.lastX : -1, d.lastY);
+      if (over === 'board' && !d.scrolling) {
+        d.scrolling = true;
+        const tick = () => {
+          if (drag !== d || d.over !== 'board') { d.scrolling = false; return; }
+          this.edgeScroll(d.lastX, d.lastY, d.lastY + lift(d));
+          this.highlightDrop(d.lastX, d.lastY);
+          requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      }
     });
 
     const end = async (e: PointerEvent, cancelled = false) => {
@@ -960,7 +1072,7 @@ export class App {
       d.src.classList.remove('dragging');
       if (cancelled) return this.flipFrom(prev, () => this.render());
       if (d.slot !== null) return this.flipFrom(prev, () => this.returnTile(d.id, d.slot!));
-      const cell = (document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null)?.closest<HTMLElement>('.cell');
+      const cell = (document.elementFromPoint(e.clientX, e.clientY - lift(d)) as HTMLElement | null)?.closest<HTMLElement>('.cell');
       if (cell && (await this.flipFromAsync(prev, () => this.placeTile(d.id, +cell.dataset.r!, +cell.dataset.c!)))) return;
       this.flipFrom(prev, () => this.render());
     };
@@ -1204,7 +1316,8 @@ export class App {
 
 const TEMPLATE = `
 <main class="app">
-<div class="board-wrap"><div id="board" class="board" aria-label="Plateau"></div></div>
+<div class="board-wrap"><div class="board-scroll" id="boardScroll"><div id="board" class="board" aria-label="Plateau"></div></div>
+<button class="btn icon zoom-btn" id="zoomBtn" aria-label="Zoomer le plateau" aria-pressed="false"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6"/><path d="M15 15l5 5M8 10.5h5"/><path class="off" d="M10.5 8v5"/></svg></button></div>
 <div class="panel">
 <header class="top">
   <div class="top-title">

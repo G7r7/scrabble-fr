@@ -119,7 +119,22 @@ html, body { height: 100%; overflow: hidden; overscroll-behavior: none; }
 }
 .panel { display: contents; }
 .app > *, .panel > * { min-width: 0; }
-.board-wrap { grid-area: board; container-type: size; display: grid; place-items: center; min-height: 0; }
+.board-wrap { grid-area: board; container-type: size; position: relative; min-height: 0; }
+/* Zone défilante du plateau : au repos le plateau y tient entier ; zoomé, on le fait glisser au doigt. */
+.board-scroll {
+  position: absolute; inset: 0; display: grid; overflow: hidden;
+  overscroll-behavior: contain; scrollbar-width: none;
+}
+.board-scroll::-webkit-scrollbar { display: none; }
+.board-scroll.zoomed { overflow: auto; }
+.board-scroll.zoomed :is(.board, .cell, .tile:not([data-id])) { touch-action: pan-x pan-y; }
+.zoom-btn {
+  position: absolute; right: 6px; bottom: 6px; z-index: 3;
+  background: color-mix(in srgb, var(--surface), transparent 12%); backdrop-filter: blur(4px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+.app .zoom-btn[aria-pressed] { color: var(--ink); }
+@media (hover: hover) and (pointer: fine) { .zoom-btn { display: none; } }
 .scorebox { grid-area: scores; }
 .preview { grid-area: preview; }
 .rack { grid-area: rack; }
@@ -222,7 +237,8 @@ html, body { height: 100%; overflow: hidden; overscroll-behavior: none; }
   container-type: inline-size;
   display: grid; grid-template-columns: repeat(15, 1fr); gap: 2px;
   background: var(--board); padding: 4px; border-radius: var(--radius);
-  aspect-ratio: 1; width: min(100cqw, 100cqh); touch-action: none;
+  aspect-ratio: 1; width: calc(min(100cqw, 100cqh) * var(--zoom, 1)); touch-action: none;
+  margin: auto; flex: none;
   box-shadow: 0 10px 30px -18px rgba(0, 0, 0, 0.5);
   user-select: none;
 }
