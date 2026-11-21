@@ -35,6 +35,7 @@ function lsDel(k: string) { try { localStorage.removeItem(k); } catch { /* rien 
 const TOKEN_KEY = 'scrabble-fr-jeton-';
 const VARIANT_KEY = 'scrabble-fr-variante';
 const THEME_KEY = 'scrabble-fr-theme';
+const OPP_KEY = 'scrabble-fr-adversaire';
 const DICT_KEY = 'scrabble-fr-liste';
 /** Parties en ligne en cours sur cet appareil (« Mes parties en cours »). */
 const GAMES_KEY = 'scrabble-fr-parties';
@@ -107,8 +108,8 @@ export class App {
   private notifier = new Notifier();
 
   private el = {} as Record<
-    'board' | 'rack' | 'preview' | 'scores' | 'bag' | 'history' | 'actions' | 'dict' | 'status' | 'level' |
-    'levelWrap' | 'onlineBtn' | 'newGame' | 'onlineInfo' | 'onlineBody' | 'sfxBtn' | 'musicBtn' | 'notifBtn' | 'variant' | 'fantasy',
+    'board' | 'rack' | 'preview' | 'scores' | 'bag' | 'history' | 'actions' | 'dict' | 'status' |
+    'newGame' | 'quitBtn' | 'onlineInfo' | 'onlineBody' | 'sfxBtn' | 'musicBtn' | 'notifBtn',
     HTMLElement
   >;
 
@@ -116,8 +117,8 @@ export class App {
 
   async start() {
     this.root.innerHTML = TEMPLATE;
-    for (const k of ['board', 'rack', 'preview', 'scores', 'bag', 'history', 'actions', 'dict', 'status', 'level',
-      'levelWrap', 'onlineBtn', 'newGame', 'onlineInfo', 'onlineBody', 'sfxBtn', 'musicBtn', 'notifBtn', 'variant', 'fantasy'] as const) {
+    for (const k of ['board', 'rack', 'preview', 'scores', 'bag', 'history', 'actions', 'dict', 'status',
+      'newGame', 'quitBtn', 'onlineInfo', 'onlineBody', 'sfxBtn', 'musicBtn', 'notifBtn'] as const) {
       this.el[k] = $(this.root, `#${k}`);
     }
     this.buildBoard();
@@ -137,10 +138,6 @@ export class App {
       return;
     }
     loading.remove();
-    (this.el.level as HTMLSelectElement).value = this.game.level;
-    (this.el.variant as HTMLSelectElement).value = this.variantPref() ?? 'normal';
-    (this.el.fantasy as HTMLSelectElement).value = this.themePref() ?? '';
-    this.renderDictSelect();
     this.seen = this.game.history.length;
     this.syncRack();
     this.render();
@@ -223,7 +220,6 @@ export class App {
   /** Change la liste de la partie contre l'ordinateur (tout de suite) et des suivantes. */
   private setDict(id: GameDict) {
     lsSet(DICT_KEY, id);
-    this.renderDictSelect();
     if (this.mode !== 'solo') return this.setStatus('La liste choisie servira pour vos prochaines parties contre l’ordinateur.');
     if (id === 'libre') delete this.game.dict; else this.game.dict = id;
     saveGame(this.game);
@@ -275,14 +271,21 @@ export class App {
   /** Options de la prochaine partie contre l'ordinateur. */
   private prefs() { return { variant: this.variantPref(), theme: this.themePref(), dict: this.dictPref() }; }
 
-  private startNewGame() {
-    if (this.mode !== 'solo') return this.quitOnline();
-    if (this.busy) return;
-    if (!this.game.over && this.game.history.length > 0 && !confirm('Abandonner la partie en cours ?')) return;
-    this.game = newGame((this.el.level as HTMLSelectElement).value as Level, null, this.prefs());
+  /** Nouvelle partie contre l'ordinateur (depuis la fenêtre « Nouvelle partie », ou « Rejouer » en fin de partie). */
+  private startSolo(level: Level, opts: { variant: Variant | null; theme: ThemeId | null; dict: GameDict }) {
+    const solo = this.mode === 'solo' ? this.game : loadGame();
+    if (solo && !solo.over && solo.history.length > 0 && !confirm('Abandonner la partie en cours contre l’ordinateur ?')) return false;
+    // Une partie en ligne en cours n'est pas quittée : elle reste dans « Mes parties en cours ».
+    if (this.mode === 'online') { this.disconnect(); this.mode = 'solo'; this.me = 0; this.gameCode = null; setUrlCode(null); }
+    this.busy = false;
+    this.game = newGame(level, null, opts);
     this.resetBoardUi();
-    if (this.game.variant) this.setStatus(`Nouvelle partie en mode ${variantLabel(this.game.variant)}.`);
+    const parts = [`niveau ${level}`, variantLabel(opts.variant) !== 'Normal' ? `mode ${variantLabel(opts.variant)}` : '',
+      opts.dict === 'ods' ? 'votre fichier' : opts.dict !== 'libre' ? `liste ${dictInfo(opts.dict).label}` : '',
+      opts.theme ? `thème ${themeInfo(opts.theme).label}` : ''].filter(Boolean);
+    this.setStatus(`Nouvelle partie contre l’ordinateur : ${parts.join(', ')}.`);
     this.afterTurn();
+    return true;
   }
 
   /** Aligne les tuiles affichées sur le chevalet réel, en conservant l'ordre choisi par le joueur. */
@@ -632,7 +635,7 @@ export class App {
     const other = this.mode === 'solo' ? 'ordinateur' : a.name;
     $(d, '#endDetail').textContent =
       `Lettres restantes — vous : ${h.rack.join(' ') || 'aucune'} · ${other} : ${a.rack.join(' ') || 'aucune'}`;
-    $(d, '#endNew').textContent = this.mode === 'solo' ? 'Nouvelle partie' : 'Revanche';
+    $(d, '#endNew').textContent = this.mode === 'solo' ? 'Rejouer' : 'Revanche';
     d.classList.add('open');
     this.sound.end(h.score > a.score);
   }
@@ -899,32 +902,49 @@ export class App {
   private lobby(view: 'menu' | 'hosting' | 'joining' | 'error' | 'transfer', arg = '', ready = false) {
     const name = esc(cleanName(lsGet('scrabble-fr-nom')));
     const body = this.el.onlineBody;
-    if (view === 'menu') {
-      const variant = this.variantPref() ?? 'normal', dict = dictOf(lsGet(DICT_KEY)) ?? 'libre';
+    if (view === 'menu' && arg) {
+      // Arrivée par un lien de partie : on rejoint, rien d'autre à régler.
       body.innerHTML = `
-        <h2>Jouer en ligne</h2>
-        <p class="muted">Affrontez quelqu’un à distance : créez une partie et envoyez-lui le lien.</p>
-        <section id="olGames" class="my-games" hidden></section>
+        <h2>Rejoindre la partie</h2>
+        <p class="muted">On vous a invité à une partie en ligne.</p>
         <label class="field">Votre nom<input id="olName" maxlength="16" autocomplete="nickname" value="${name}" placeholder="Votre nom" /></label>
-        ${arg ? '' : `<section class="setup" aria-label="Nouvelle partie">
-          <h3>Nouvelle partie</h3>
-          <div class="setup-row"><span class="setup-label" id="olModeLabel">Mode</span>
-            <div class="seg" role="radiogroup" aria-labelledby="olModeLabel">${VARIANTS.map((v) => `<label class="seg-opt v-${v.id}">
-              <input type="radio" name="olVariant" value="${v.id}" ${variant === v.id ? 'checked' : ''} /><span>${v.label}</span></label>`).join('')}</div>
-          </div>
-          <p class="setup-help" id="olVariantHelp">${VARIANTS.find((v) => v.id === variant)!.help}</p>
-          <label class="setup-row"><span class="setup-label">Liste</span><select id="olDict">${DICTS.map((d) =>
-            `<option value="${d.id}" ${dict === d.id ? 'selected' : ''}>${d.label} (${d.words} mots)</option>`).join('')}</select></label>
-          <label class="setup-row"><span class="setup-label">Thème</span><select id="olTheme">${this.themeOptions(this.themePref())}</select></label>
-          <button class="btn primary wide" data-ol="create">Créer la partie</button>
-        </section>
-        <div class="sep"><span>ou rejoindre une partie</span></div>`}
         <form class="check" data-ol="join-form">
           <input id="olCode" maxlength="7" placeholder="Code de la partie" autocomplete="off" autocapitalize="characters" value="${esc(arg)}" />
-          <button class="btn ${arg ? 'primary' : ''}">Rejoindre</button>
+          <button class="btn primary">Rejoindre</button>
         </form>
-        <p class="note">La partie est gardée sur le serveur : chacun peut fermer la page et revenir plus tard avec le lien.
-          Le serveur vérifie chaque coup avec la liste choisie à la création.</p>
+        <div class="row"><button type="button" class="btn" data-ol="close">Fermer</button></div>`;
+    } else if (view === 'menu') {
+      const opp = lsGet(OPP_KEY) === 'online' ? 'online' : 'solo';
+      const variant = this.variantPref() ?? 'normal', level = this.readLevel();
+      const dict = this.dictPref();
+      const seg = (nameAttr: string, items: { id: string; label: string; cls?: string }[], cur: string, label: string) =>
+        `<div class="seg" role="radiogroup" aria-label="${label}" style="--n:${items.length}">${items.map((x) => `<label class="seg-opt ${x.cls ?? ''}">
+          <input type="radio" name="${nameAttr}" value="${x.id}" ${cur === x.id ? 'checked' : ''} /><span>${x.label}</span></label>`).join('')}</div>`;
+      body.innerHTML = `
+        <h2>Nouvelle partie</h2>
+        <section id="olGames" class="my-games" hidden></section>
+        <section class="setup" data-opp="${opp}" aria-label="Nouvelle partie">
+          <div class="setup-row"><span class="setup-label">Contre</span>${seg('olOpp',
+            [{ id: 'solo', label: 'L’ordinateur' }, { id: 'online', label: 'En ligne' }], opp, 'Adversaire')}</div>
+          <div class="setup-row only-solo"><span class="setup-label">Niveau</span>${seg('olLevel',
+            LEVELS.map((l) => ({ id: l, label: l[0].toUpperCase() + l.slice(1) })), level, 'Niveau de l’ordinateur')}</div>
+          <label class="setup-row only-online"><span class="setup-label">Votre nom</span><input id="olName" maxlength="16" autocomplete="nickname" value="${name}" placeholder="Votre nom" /></label>
+          <div class="setup-row"><span class="setup-label">Mode</span>${seg('olVariant',
+            VARIANTS.map((v) => ({ id: v.id, label: v.label, cls: `v-${v.id}` })), variant, 'Mode de jeu')}</div>
+          <p class="setup-help" id="olVariantHelp">${VARIANTS.find((v) => v.id === variant)!.help}</p>
+          <label class="setup-row"><span class="setup-label">Liste</span><select id="olDict">${DICTS.map((d) =>
+            `<option value="${d.id}" ${dict === d.id ? 'selected' : ''}>${d.label} (${d.words} mots)</option>`).join('')}${this.odsName
+            ? `<option value="ods" ${dict === 'ods' ? 'selected' : ''} ${opp === 'online' ? 'disabled' : ''}>Mon fichier : ${esc(this.odsName)}</option>` : ''}</select></label>
+          <label class="setup-row"><span class="setup-label">Thème</span><select id="olTheme">${this.themeOptions(this.themePref())}</select></label>
+          <button class="btn primary wide" data-ol="start">Démarrer la partie</button>
+          <p class="setup-note only-online">Vous recevrez un lien à envoyer à votre adversaire. La partie est gardée sur le serveur :
+            chacun peut fermer l’appli et revenir plus tard.</p>
+        </section>
+        <div class="sep"><span>ou rejoindre une partie en ligne</span></div>
+        <form class="check" data-ol="join-form">
+          <input id="olCode" maxlength="7" placeholder="Code de la partie" autocomplete="off" autocapitalize="characters" />
+          <button class="btn">Rejoindre</button>
+        </form>
         <div class="row"><button type="button" class="btn" data-ol="close">Fermer</button></div>`;
     } else if (view === 'hosting') {
       const link = `${location.origin}${location.pathname}?partie=${arg}`;
@@ -966,7 +986,7 @@ export class App {
     }
     $(this.root, '#onlineDialog').classList.add('open');
     if (view === 'menu') { this.renderGamesList(); void this.refreshMyGames(); }
-    if (view !== 'transfer') body.querySelector<HTMLInputElement>(view === 'menu' && !name ? '#olName' : '#olCode')?.focus();
+    if (view === 'menu' && arg) body.querySelector<HTMLInputElement>(name ? '#olCode' : '#olName')?.focus();
   }
 
   private themeOptions(current: ThemeId | null) {
@@ -994,14 +1014,28 @@ export class App {
     };
     body.addEventListener('click', (e) => {
       const a = (e.target as HTMLElement).closest<HTMLElement>('[data-ol]')?.dataset.ol;
-      if (a === 'create') {
-        if (!saveName()) return;
-        const v = variantOf(body.querySelector<HTMLInputElement>('input[name="olVariant"]:checked')?.value);
+      if (a === 'start') {
+        const pick = (n: string) => body.querySelector<HTMLInputElement>(`input[name="${n}"]:checked`)?.value;
+        const online = pick('olOpp') === 'online';
+        const variant = variantOf(pick('olVariant'));
         const theme = themeOf(body.querySelector<HTMLSelectElement>('#olTheme')?.value);
-        lsSet(VARIANT_KEY, v ?? 'normal');
+        const dictVal = body.querySelector<HTMLSelectElement>('#olDict')?.value;
+        const level = (LEVELS as string[]).includes(pick('olLevel') ?? '') ? pick('olLevel') as Level : 'moyen';
+        // On retient ces réglages pour la prochaine fois.
+        lsSet(OPP_KEY, online ? 'online' : 'solo');
+        lsSet(VARIANT_KEY, variant ?? 'normal');
         lsSet(THEME_KEY, theme ?? '');
-        const dict: DictId = dictOf(body.querySelector<HTMLSelectElement>('#olDict')?.value) ?? 'libre';
-        this.createGame({ variant: v, theme, dict });
+        if (!online) {
+          const dict: GameDict = dictVal === 'ods' && this.odsName ? 'ods' : dictOf(dictVal) ?? 'libre';
+          lsSet(DICT_KEY, dict);
+          lsSet('scrabble-fr-niveau', level);
+          if (this.startSolo(level, { variant, theme, dict })) this.closeLobby();
+          return;
+        }
+        if (!saveName()) return;
+        const dict: DictId = dictOf(dictVal) ?? 'libre';
+        lsSet(DICT_KEY, dict);
+        this.createGame({ variant, theme, dict });
       }
       else if (a === 'close' || a === 'cancel') cancel();
       else if (a === 'menu') this.lobby('menu');
@@ -1024,6 +1058,12 @@ export class App {
     });
     body.addEventListener('submit', (e) => {
       e.preventDefault();
+      // Rejoindre demande un nom : on affiche le champ s'il était masqué (adversaire « ordinateur » coché).
+      const online = body.querySelector<HTMLInputElement>('input[name="olOpp"][value="online"]');
+      if (online && !cleanName(body.querySelector<HTMLInputElement>('#olName')?.value)) {
+        online.checked = true;
+        online.dispatchEvent(new Event('change', { bubbles: true }));
+      }
       if (!saveName()) return;
       const input = $<HTMLInputElement>(body, '#olCode');
       const code = normalizeCode(input.value);
@@ -1035,6 +1075,18 @@ export class App {
       const t = e.target as HTMLInputElement;
       const help = body.querySelector('#olVariantHelp');
       if (t.name === 'olVariant' && help) help.textContent = VARIANTS.find((v) => v.id === t.value)?.help ?? '';
+      if (t.name === 'olOpp') {
+        const setup = body.querySelector<HTMLElement>('.setup');
+        if (setup) setup.dataset.opp = t.value;
+        // Votre fichier ODS ne sert qu'en solo : il ne part jamais sur le serveur.
+        const ods = body.querySelector<HTMLOptionElement>('#olDict option[value="ods"]');
+        if (ods) {
+          ods.disabled = t.value === 'online';
+          const sel = ods.parentElement as HTMLSelectElement;
+          if (ods.disabled && sel.value === 'ods') sel.value = 'libre';
+        }
+        if (t.value === 'online') body.querySelector<HTMLInputElement>('#olName')?.focus();
+      }
     });
   }
 
@@ -1126,9 +1178,14 @@ export class App {
       else if (a === 'pass') this.doPass();
       else if (a === 'accept' || a === 'challenge') void this.respond(a);
     });
-    $(this.root, '#newGame').addEventListener('click', () => this.startNewGame());
-    $(this.root, '#endNew').addEventListener('click', () => (this.mode === 'solo' ? this.startNewGame() : this.rematch()));
-    this.el.onlineBtn.addEventListener('click', () => this.lobby('menu'));
+    this.el.newGame.addEventListener('click', () => this.lobby('menu'));
+    this.el.quitBtn.addEventListener('click', () => this.quitOnline());
+    // Rejouer contre l'ordinateur avec les mêmes réglages.
+    $(this.root, '#endNew').addEventListener('click', () => {
+      if (this.mode !== 'solo') return this.rematch();
+      const g = this.game;
+      this.startSolo(g.level, { variant: g.variant ?? null, theme: g.theme ?? null, dict: g.dict ?? 'libre' });
+    });
     $(this.root, '#transferBtn').addEventListener('click', () => this.lobby('transfer'));
     $(this.root, '#gamesBar').addEventListener('click', (e) => {
       const b = (e.target as HTMLElement).closest<HTMLElement>('button');
@@ -1156,46 +1213,6 @@ export class App {
     this.bindNotifications();
     this.bindLobby();
     $(this.root, '#endClose').addEventListener('click', () => $(this.root, '#endDialog').classList.remove('open'));
-    this.el.level.addEventListener('change', () => {
-      const l = (this.el.level as HTMLSelectElement).value as Level;
-      try { localStorage.setItem('scrabble-fr-niveau', l); } catch { /* rien */ }
-      if (this.mode !== 'solo') return;
-      this.game.level = l;
-      saveGame(this.game);
-      this.setStatus(`Niveau de l'ordinateur : ${l}.`);
-    });
-    this.el.variant.addEventListener('change', () => {
-      const v = variantOf((this.el.variant as HTMLSelectElement).value);
-      lsSet(VARIANT_KEY, v ?? 'normal');
-      if (this.mode !== 'solo') return;
-      const info = VARIANTS.find((x) => x.id === (v ?? 'normal'))!;
-      // Partie pas encore commencée : le mode s'applique tout de suite.
-      if (!this.game.history.length && !this.game.proposal && !this.busy) {
-        if (v) this.game.variant = v; else delete this.game.variant;
-        saveGame(this.game);
-        this.render();
-        return this.setStatus(`Mode ${info.label} : ${info.help}`);
-      }
-      this.setStatus(`Mode ${info.label} pour la prochaine partie : ${info.help}`);
-    });
-    $(this.root, '#dictSel').addEventListener('change', (e) => {
-      const v = (e.target as HTMLSelectElement).value;
-      this.setDict(v === 'ods' && this.odsName ? 'ods' : dictOf(v) ?? 'libre');
-    });
-    this.el.fantasy.addEventListener('change', () => {
-      const t = themeOf((this.el.fantasy as HTMLSelectElement).value);
-      lsSet(THEME_KEY, t ?? '');
-      if (this.mode !== 'solo') return;
-      const what = t ? `Fantasy « ${themeInfo(t).label} » : les mots du thème rapportent ×${THEME_MULT}` : 'Sans thème';
-      if (!this.game.history.length && !this.game.proposal && !this.busy) {
-        if (t) this.game.theme = t; else delete this.game.theme;
-        saveGame(this.game);
-        this.render();
-        return this.setStatus(`${what}.`);
-      }
-      this.setStatus(`${what}, à la prochaine partie.`);
-    });
-
     this.el.dict.addEventListener('change', (e) => {
       const input = e.target as HTMLInputElement;
       if (input.type !== 'file') return;
@@ -1246,7 +1263,7 @@ export class App {
       if (t) this.setTab(t as Tab);
     });
     // Lancer une partie ramène sur le plateau.
-    for (const id of ['#onlineBtn', '#newGame']) $(this.root, id).addEventListener('click', () => this.setTab('game'));
+    this.el.newGame.addEventListener('click', () => this.setTab('game'));
     this.setTab('game');
   }
 
@@ -1698,14 +1715,9 @@ export class App {
          <button class="btn" data-action="exchange" ${can && g.bag.length >= RACK_SIZE ? '' : 'disabled'}>Échanger</button>
          <button class="btn" data-action="pass" ${can ? '' : 'disabled'}>Passer</button>`;
 
-    this.el.levelWrap.hidden = !solo;
-    $(this.root, '#variantWrap').hidden = !solo;
-    $(this.root, '#fantasyWrap').hidden = !solo;
-    $(this.root, '#dictWrap').hidden = !solo;
     $(this.root, '#transferBtn').hidden = solo || !this.link;
+    this.el.quitBtn.hidden = solo;
     this.renderGamesBar();
-    this.el.onlineBtn.hidden = !solo;
-    this.el.newGame.textContent = solo ? 'Nouvelle partie' : 'Quitter';
     this.el.onlineInfo.hidden = solo;
     if (!solo) {
       const code = this.link?.code ?? '';
@@ -1757,14 +1769,6 @@ export class App {
     this.el.sfxBtn.title = this.sound.sfxOn ? 'Couper les sons' : 'Activer les sons';
     this.el.musicBtn.setAttribute('aria-pressed', String(this.sound.musicOn));
     this.el.musicBtn.title = this.sound.musicOn ? 'Couper la musique' : 'Musique de fond';
-  }
-
-  /** Choix de la liste dans les options (avec le fichier importé, s'il y en a un). */
-  private renderDictSelect() {
-    const sel = $<HTMLSelectElement>(this.root, '#dictSel');
-    sel.innerHTML = DICTS.map((d) => `<option value="${d.id}">${d.label} (${d.words} mots)</option>`).join('') +
-      (this.odsName ? `<option value="ods">Mon fichier : ${esc(this.odsName)}</option>` : '');
-    sel.value = this.dictPref();
   }
 
   private renderDict() {
@@ -1860,24 +1864,8 @@ const TEMPLATE = `
   </div>
   <div class="top-actions" id="topActions">
     <span id="onlineInfo" class="online-info" hidden></span>
-    <label class="level" id="levelWrap">Niveau
-      <select id="level">
-        <option value="facile">Facile</option>
-        <option value="moyen">Moyen</option>
-        <option value="difficile">Difficile</option>
-      </select>
-    </label>
-    <label class="level" id="variantWrap">Mode
-      <select id="variant">${VARIANTS.map((v) => `<option value="${v.id}" title="${v.help}">${v.label}</option>`).join('')}</select>
-    </label>
-    <label class="level" id="dictWrap">Liste de mots
-      <select id="dictSel"></select>
-    </label>
-    <label class="level" id="fantasyWrap">Fantasy
-      <select id="fantasy"><option value="">Aucun thème</option>${THEMES.map((t) => `<option value="${t.id}">${t.icons[0]} ${t.label}</option>`).join('')}</select>
-    </label>
-    <button class="btn primary" id="onlineBtn">Jouer en ligne</button>
-    <button class="btn" id="newGame">Nouvelle partie</button>
+    <button class="btn primary" id="newGame">Nouvelle partie</button>
+    <button class="btn" id="quitBtn" hidden>Quitter la partie en ligne</button>
     <button class="btn" id="transferBtn" hidden>Continuer sur un autre appareil</button>
     <button class="btn" id="installBtn" hidden>Installer l’appli</button>
   </div>

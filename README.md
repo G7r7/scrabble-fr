@@ -15,7 +15,9 @@ Scrabble en français, à jouer dans le navigateur contre l'ordinateur.
     (« à vous ! ») et « Jouer en ligne » les liste, avec l'état à jour donné par le serveur. On reprend d'un toucher.
   - **Continuer sur un autre appareil** (Options, pendant une partie en ligne) : un lien et un QR code qui
     contiennent votre place ; l'appareil précédent est déconnecté. « Quitter » abandonne la partie pour de bon.
-- **Trois modes de jeu** (Options, ou à la création d'une partie en ligne) :
+- **Un seul bouton « Nouvelle partie »** : on y choisit l'adversaire (l'ordinateur et son niveau, ou quelqu'un en ligne),
+  le mode, la liste de mots et le thème ; les réglages sont retenus pour la fois suivante.
+- **Trois modes de jeu** :
   - **Normal** : les mots sont vérifiés avant d'être joués ;
   - **Challenge** : aucune vérification avant de jouer. L'adversaire accepte le coup ou le conteste
     (« CHALLENGE ! ») : si le mot est refusé, le coup est annulé et son auteur perd son tour ;
@@ -31,7 +33,7 @@ Scrabble en français, à jouer dans le navigateur contre l'ordinateur.
 
 ## Listes de mots
 
-Chaque partie se joue avec une liste au choix (Options en solo, ou à la création d'une partie en ligne). Toutes sont libres :
+Chaque partie se joue avec une liste au choix (fenêtre « Nouvelle partie »). Toutes sont libres :
 
 | Liste | Mots | Source | Licence |
 |---|---|---|---|
