@@ -13,6 +13,7 @@ import {
 import type { Level } from '../ai/player';
 import { Engine } from '../engine';
 import { Fx, Sound } from './fx';
+import { Notifier, bindInstall, notifSupported } from './notify';
 import { clearOds, loadOds, saveOds } from '../dict/store';
 import { normalizeWord } from '../dict/normalize.js';
 
@@ -69,10 +70,11 @@ export class App {
   private seen = 0;                       // entrées d'historique déjà célébrées
   private shown: [number, number] | null = null; // scores affichés (pendant le défilement)
   private fxDone: Promise<void> = Promise.resolve();
+  private notifier = new Notifier();
 
   private el = {} as Record<
     'board' | 'rack' | 'preview' | 'scores' | 'bag' | 'history' | 'actions' | 'dict' | 'status' | 'level' |
-    'levelWrap' | 'onlineBtn' | 'newGame' | 'onlineInfo' | 'onlineBody' | 'sfxBtn' | 'musicBtn',
+    'levelWrap' | 'onlineBtn' | 'newGame' | 'onlineInfo' | 'onlineBody' | 'sfxBtn' | 'musicBtn' | 'notifBtn',
     HTMLElement
   >;
 
@@ -81,7 +83,7 @@ export class App {
   async start() {
     this.root.innerHTML = TEMPLATE;
     for (const k of ['board', 'rack', 'preview', 'scores', 'bag', 'history', 'actions', 'dict', 'status', 'level',
-      'levelWrap', 'onlineBtn', 'newGame', 'onlineInfo', 'onlineBody', 'sfxBtn', 'musicBtn'] as const) {
+      'levelWrap', 'onlineBtn', 'newGame', 'onlineInfo', 'onlineBody', 'sfxBtn', 'musicBtn', 'notifBtn'] as const) {
       this.el[k] = $(this.root, `#${k}`);
     }
     this.buildBoard();
@@ -295,7 +297,21 @@ export class App {
     if (this.mode !== 'solo' && fresh.length && !g.over && g.current === this.me) {
       void this.fxDone.then(() => this.sound.turn());
     }
+    this.notifyTurn(fresh);
     this.tweenScores(wait);
+  }
+
+  /** Notification quand l'adversaire a joué (ou que la partie est finie) pendant que la page est cachée. */
+  private notifyTurn(fresh: HistoryEntry[]) {
+    const g = this.game;
+    if (!fresh.length) return;
+    if (g.over) return void this.notifier.show(winnerText(g, this.me), 'La partie est terminée.', 'tour');
+    const theirs = fresh.filter((e) => e.player === this.opp && e.kind !== 'end').pop();
+    if (!theirs || g.current !== this.me) return;
+    const who = this.mode === 'solo' ? 'L’ordinateur' : g.players[this.opp].name;
+    const what = theirs.kind === 'play' ? `${who} joue ${theirs.text} pour ${theirs.score} points.`
+      : theirs.kind === 'exchange' ? `${who} échange des lettres.` : `${who} passe son tour.`;
+    void this.notifier.show('À vous de jouer !', what, 'tour');
   }
 
   private tweenScores(delayMs: number) {
@@ -433,6 +449,8 @@ export class App {
         this.resetBoardUi();
         this.closeLobby();
         this.setStatus(`${name} a rejoint la partie.`);
+        void this.notifier.show(`${name} a rejoint la partie`,
+          this.game.current === this.me ? 'La partie commence : à vous de jouer !' : `La partie commence : ${name} joue en premier.`, 'tour');
       } else {
         this.game.players[1].name = name;
         this.setStatus(`${name} est de retour.`);
@@ -452,6 +470,7 @@ export class App {
     } else if (m.type === 'bye') {
       this.oppConnected = false;
       this.setStatus(`${this.game.players[1].name} a quitté la partie.`, true);
+      void this.notifier.show(`${this.game.players[1].name} a quitté la partie`, '', 'depart');
       this.render();
     }
   }
@@ -511,6 +530,7 @@ export class App {
     } else if (m.type === 'bye') {
       this.oppConnected = false;
       this.setStatus(`${this.game.players[this.opp].name} a fermé la partie.`, true);
+      void this.notifier.show(`${this.game.players[this.opp].name} a fermé la partie`, '', 'depart');
       this.render();
     }
   }
@@ -743,6 +763,7 @@ export class App {
       });
     }
     this.renderSoundButtons();
+    this.bindNotifications();
     this.bindLobby();
     $(this.root, '#endClose').addEventListener('click', () => $(this.root, '#endDialog').classList.remove('open'));
     this.el.level.addEventListener('change', () => {
@@ -1105,6 +1126,27 @@ export class App {
 
   private shownScore(i: 0 | 1) { return (this.shown ?? [this.game.players[0].score, this.game.players[1].score])[i]; }
 
+  private bindNotifications() {
+    bindInstall($(this.root, '#installBtn'));
+    if (!notifSupported()) return;
+    this.el.notifBtn.hidden = false;
+    this.notifier.bindFocus();
+    this.renderNotifButton();
+    this.el.notifBtn.addEventListener('click', async () => {
+      const on = await this.notifier.toggle();
+      this.renderNotifButton();
+      this.setStatus(on ? 'Notifications activées : vous serez prévenu quand c’est à vous de jouer.'
+        : this.notifier.blocked ? 'Notifications bloquées par le navigateur : autorisez-les dans les paramètres du site.'
+        : 'Notifications désactivées.', !on && this.notifier.blocked);
+    });
+  }
+
+  private renderNotifButton() {
+    const on = this.notifier.enabled;
+    this.el.notifBtn.setAttribute('aria-pressed', String(on));
+    this.el.notifBtn.title = on ? 'Couper les notifications' : 'Me prévenir quand c’est à moi de jouer';
+  }
+
   private renderSoundButtons() {
     this.el.sfxBtn.setAttribute('aria-pressed', String(this.sound.sfxOn));
     this.el.sfxBtn.title = this.sound.sfxOn ? 'Couper les sons' : 'Activer les sons';
@@ -1170,6 +1212,7 @@ const TEMPLATE = `
   <div class="top-icons">
     <button class="btn icon" id="sfxBtn" aria-label="Sons"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4z"/><path class="on" d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12"/><path class="off" d="M16 9l6 6M22 9l-6 6"/></svg></button>
     <button class="btn icon" id="musicBtn" aria-label="Musique"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V6l11-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="17.5" cy="16" r="2.5"/><path class="off" d="M3 3l18 18"/></svg></button>
+    <button class="btn icon" id="notifBtn" aria-label="Notifications" aria-pressed="false" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 20.5a2 2 0 0 0 4 0"/><path class="off" d="M3 3l18 18"/></svg></button>
     <button class="btn icon" id="fsBtn" aria-label="Plein écran" aria-pressed="false" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path class="off" d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/><path class="on" d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg></button>
   </div>
   </div>
@@ -1184,6 +1227,7 @@ const TEMPLATE = `
     </label>
     <button class="btn primary" id="onlineBtn">Jouer en ligne</button>
     <button class="btn" id="newGame">Nouvelle partie</button>
+    <button class="btn" id="installBtn" hidden>Installer l’appli</button>
   </div>
 </header>
 <section class="scorebox">

@@ -11,6 +11,11 @@ Scrabble en français, à jouer dans le navigateur contre l'ordinateur.
 - **Jeu en ligne** à deux : « Jouer en ligne », puis envoyez le lien (ou le code à 6 caractères) à votre adversaire.
   Chacun peut recharger la page ou perdre le réseau : la partie reprend toute seule.
 - Animations (pose des lettres, décompte mot par mot, compteur de points) et sons synthétisés, avec une musique de fond facultative.
+- **Notifications** (icône cloche) : le navigateur vous prévient quand c'est à vous de jouer, quand la partie se termine
+  ou quand l'adversaire arrive ou s'en va. Elles ne s'affichent que si la page est en arrière-plan.
+- **Application installable** : dans Chrome ou Edge, « Installer l'appli » (Options) ou l'icône d'installation dans la barre d'adresse.
+  L'appli s'ouvre dans sa propre fenêtre, affiche une pastille quand c'est votre tour et se lance hors ligne pour jouer contre l'ordinateur
+  (`public/manifest.webmanifest`, `public/sw.js`).
 
 ## Dictionnaire
 
