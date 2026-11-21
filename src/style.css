@@ -799,3 +799,16 @@ input.invalid { border-color: var(--bad); outline: 1px solid var(--bad); }
 .pane[data-pane="options"] .volume { justify-content: space-between; font-size: 1rem; color: var(--ink); }
 .pane[data-pane="options"] .vol-label { display: inline; margin-right: 6px; }
 .pane[data-pane="options"] .volume input[type="range"] { flex: 1; width: auto; }
+
+/* ---------- Bouton musique : couleur selon la musique choisie ---------- */
+#musicBtn { --jazz: #c2410c; --classique: #6d28d9; transition: color 0.2s, background 0.2s, border-color 0.2s; }
+@media (prefers-color-scheme: dark) { #musicBtn { --jazz: #fbbf24; --classique: #c4b5fd; } }
+:root[data-theme="dark"] #musicBtn { --jazz: #fbbf24; --classique: #c4b5fd; }
+#musicBtn[data-mode="jazz"] {
+  color: var(--jazz); border-color: color-mix(in srgb, var(--jazz), transparent 45%);
+  background: color-mix(in srgb, var(--jazz), transparent 88%);
+}
+#musicBtn[data-mode="classique"] {
+  color: var(--classique); border-color: color-mix(in srgb, var(--classique), transparent 45%);
+  background: color-mix(in srgb, var(--classique), transparent 86%);
+}

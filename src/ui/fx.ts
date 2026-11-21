@@ -1,22 +1,31 @@
 // Effets sonores et animations. Tous les sons sont synthétisés (Web Audio) : aucun fichier à charger.
 import { SIZE } from '../game/constants';
 import type { FormedWord } from '../game/types';
+import { Cathedral } from './cathedral';
 
 const midi = (n: number) => 440 * 2 ** ((n - 69) / 12);
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 function lsGet(k: string) { try { return localStorage.getItem(k); } catch { return null; } }
 function lsSet(k: string, v: string) { try { localStorage.setItem(k, v); } catch { /* rien */ } }
 
+export type MusicMode = 'off' | 'jazz' | 'classique';
+
 export class Sound {
   private ctx: AudioContext | null = null;
   private sfxBus!: GainNode;
   private musicBus!: GainNode;
   sfxOn = lsGet('scrabble-fr-son') !== '0';
-  musicOn = lsGet('scrabble-fr-musique') === '1';
+  /** Musique de fond : coupée, jazz (swing léger) ou classique (orchestre de cathédrale). */
+  musicMode: MusicMode = (() => {
+    const v = lsGet('scrabble-fr-musique');
+    return v === '1' || v === 'jazz' ? 'jazz' : v === 'classique' ? 'classique' : 'off';
+  })();
+  get musicOn() { return this.musicMode !== 'off'; }
   /** Volume général (musique et effets), de 0 à 1. */
   volume = (() => { const v = Number(lsGet('scrabble-fr-volume')); return lsGet('scrabble-fr-volume') !== null && v >= 0 && v <= 1 ? v : 1; })();
   private masterGain!: GainNode;
   private music: Music | null = null;
+  private cathedral: Cathedral | null = null;
 
   constructor() {
     // Les navigateurs n'autorisent le son qu'après un geste de l'utilisateur.
@@ -80,16 +89,29 @@ export class Sound {
   }
 
   setSfx(on: boolean) { this.sfxOn = on; lsSet('scrabble-fr-son', on ? '1' : '0'); }
-  setMusic(on: boolean) {
-    this.musicOn = on;
-    lsSet('scrabble-fr-musique', on ? '1' : '0');
-    if (on) this.startMusic(); else this.music?.stop();
+  setMusic(mode: MusicMode) {
+    this.musicMode = mode;
+    lsSet('scrabble-fr-musique', mode === 'off' ? '0' : mode);
+    if (mode !== 'jazz') this.music?.stop();
+    if (mode !== 'classique') this.cathedral?.stop();
+    if (mode !== 'off') this.startMusic();
+  }
+  /** Bouton musique : coupée → jazz → classique → coupée. */
+  cycleMusic(): MusicMode {
+    const order: MusicMode[] = ['off', 'jazz', 'classique'];
+    this.setMusic(order[(order.indexOf(this.musicMode) + 1) % order.length]);
+    return this.musicMode;
   }
   private startMusic() {
     const ctx = this.audio();
     if (!ctx) return;
-    this.music ??= new Music(ctx, this.musicBus);
-    this.music.start();
+    if (this.musicMode === 'jazz') {
+      this.music ??= new Music(ctx, this.musicBus);
+      this.music.start();
+    } else if (this.musicMode === 'classique') {
+      this.cathedral ??= new Cathedral(ctx, this.musicBus);
+      this.cathedral.start();
+    }
   }
 
   /** Note simple avec enveloppe. */

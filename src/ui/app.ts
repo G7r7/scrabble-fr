@@ -1193,7 +1193,12 @@ export class App {
       else if (b?.hasAttribute('data-games')) this.lobby('menu');
     });
     this.el.sfxBtn.addEventListener('click', () => { this.sound.setSfx(!this.sound.sfxOn); this.renderSoundButtons(); this.sound.place(); });
-    this.el.musicBtn.addEventListener('click', () => { this.sound.setMusic(!this.sound.musicOn); this.renderSoundButtons(); });
+    this.el.musicBtn.addEventListener('click', () => {
+      const m = this.sound.cycleMusic();
+      this.renderSoundButtons();
+      this.setStatus(m === 'jazz' ? 'Musique : jazz.' : m === 'classique'
+        ? 'Musique : classique — orchestre de cathédrale, composé à la volée (il ne se répète pas).' : 'Musique coupée.');
+    });
     // Volume général : on entend un petit « clac » en le réglant (si les effets sont activés).
     const vol = $<HTMLInputElement>(this.root, '#volume');
     vol.value = String(Math.round(this.sound.volume * 100));
@@ -1796,8 +1801,12 @@ export class App {
   private renderSoundButtons() {
     this.el.sfxBtn.setAttribute('aria-pressed', String(this.sound.sfxOn));
     this.el.sfxBtn.title = this.sound.sfxOn ? 'Couper les sons' : 'Activer les sons';
-    this.el.musicBtn.setAttribute('aria-pressed', String(this.sound.musicOn));
-    this.el.musicBtn.title = this.sound.musicOn ? 'Couper la musique' : 'Musique de fond';
+    const m = this.sound.musicMode;
+    this.el.musicBtn.setAttribute('aria-pressed', String(m !== 'off'));
+    this.el.musicBtn.dataset.mode = m;
+    this.el.musicBtn.title = m === 'off' ? 'Musique : coupée (toucher pour jazz)'
+      : m === 'jazz' ? 'Musique : jazz (toucher pour classique)' : 'Musique : classique (toucher pour couper)';
+    this.el.musicBtn.setAttribute('aria-label', this.el.musicBtn.title);
   }
 
   private renderDict() {

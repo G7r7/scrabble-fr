@@ -24,7 +24,11 @@ Scrabble en français, à jouer dans le navigateur contre l'ordinateur.
     sinon le coup compte et c'est celui qui a contesté qui perd son tour ;
   - **Hardcore** : chaque coup est contrôlé d'office ; un mot refusé coûte 10 points, les lettres reviennent
     sur le chevalet et le tour est perdu.
-- Animations (pose des lettres, décompte mot par mot, compteur de points) et sons synthétisés, avec une musique de fond facultative.
+- Animations (pose des lettres, décompte mot par mot, compteur de points) et sons synthétisés, volume général réglable.
+- **Musique de fond** : le bouton musique passe de « coupée » à **jazz** (swing léger), puis à **classique**, et sa couleur
+  change avec le choix. La musique classique (`src/ui/cathedral.ts`) est composée à la volée pour accompagner la
+  réflexion : orgue, cordes, chœur, cloches, harpe et hautbois dans une réverbération de cathédrale, modes anciens,
+  plans d'environ 17 minutes tirés au hasard l'un après l'autre : elle ne se répète jamais.
 - **Notifications** (icône cloche) : le navigateur vous prévient quand c'est à vous de jouer, quand la partie se termine
   ou quand l'adversaire arrive ou s'en va. Elles ne s'affichent que si la page est en arrière-plan.
 - **Application installable** : dans Chrome ou Edge, « Installer l'appli » (Options) ou l'icône d'installation dans la barre d'adresse.
