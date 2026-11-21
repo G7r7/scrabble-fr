@@ -13,6 +13,9 @@ export class Sound {
   private musicBus!: GainNode;
   sfxOn = lsGet('scrabble-fr-son') !== '0';
   musicOn = lsGet('scrabble-fr-musique') === '1';
+  /** Volume général (musique et effets), de 0 à 1. */
+  volume = (() => { const v = Number(lsGet('scrabble-fr-volume')); return lsGet('scrabble-fr-volume') !== null && v >= 0 && v <= 1 ? v : 1; })();
+  private masterGain!: GainNode;
   private music: Music | null = null;
 
   constructor() {
@@ -33,7 +36,10 @@ export class Sound {
       if (!AC) return null;
       this.ctx = new AC();
       const master = this.ctx.createDynamicsCompressor();
-      master.connect(this.ctx.destination);
+      // Volume général après le compresseur : il règle tout, musique comme effets.
+      this.masterGain = this.ctx.createGain();
+      this.masterGain.gain.value = this.curve(this.volume);
+      master.connect(this.masterGain).connect(this.ctx.destination);
       this.sfxBus = this.ctx.createGain();
       this.sfxBus.gain.value = 0.5;
       this.sfxBus.connect(master);
@@ -58,6 +64,19 @@ export class Sound {
     g.cancelScheduledValues(t);
     g.setValueAtTime(g.value, t);
     g.linearRampToValueAtTime(on ? 0.02 : 0.16, t + (on ? 0.3 : 1.2));
+  }
+
+  /** Courbe d'écoute : le curseur suit mieux l'oreille qu'une progression linéaire. */
+  private curve(v: number) { return v * v; }
+
+  setVolume(v: number) {
+    this.volume = Math.min(1, Math.max(0, v));
+    lsSet('scrabble-fr-volume', String(this.volume));
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime, g = this.masterGain.gain;
+    g.cancelScheduledValues(t);
+    g.setValueAtTime(g.value, t);
+    g.linearRampToValueAtTime(this.curve(this.volume), t + 0.05);
   }
 
   setSfx(on: boolean) { this.sfxOn = on; lsSet('scrabble-fr-son', on ? '1' : '0'); }

@@ -1194,6 +1194,18 @@ export class App {
     });
     this.el.sfxBtn.addEventListener('click', () => { this.sound.setSfx(!this.sound.sfxOn); this.renderSoundButtons(); this.sound.place(); });
     this.el.musicBtn.addEventListener('click', () => { this.sound.setMusic(!this.sound.musicOn); this.renderSoundButtons(); });
+    // Volume général : on entend un petit « clac » en le réglant (si les effets sont activés).
+    const vol = $<HTMLInputElement>(this.root, '#volume');
+    vol.value = String(Math.round(this.sound.volume * 100));
+    const paintVol = () => vol.style.setProperty('--v', `${vol.value}%`);
+    paintVol();
+    let lastClack = 0;
+    vol.addEventListener('input', () => {
+      this.sound.setVolume(+vol.value / 100);
+      paintVol();
+      const now = performance.now();
+      if (now - lastClack > 120) { lastClack = now; this.sound.place(); }
+    });
     this.bindTabs();
     const fs = $(this.root, '#fsBtn');
     if (document.fullscreenEnabled) {
@@ -1865,6 +1877,8 @@ const TEMPLATE = `
   <div class="top-actions" id="topActions">
     <span id="onlineInfo" class="online-info" hidden></span>
     <button class="btn primary" id="newGame">Nouvelle partie</button>
+    <label class="volume" title="Volume (musique et effets)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M16 8.5a5 5 0 0 1 0 7"/></svg><span class="vol-label">Volume</span>
+      <input type="range" id="volume" min="0" max="100" step="1" aria-label="Volume (musique et effets)" /></label>
     <button class="btn" id="quitBtn" hidden>Quitter la partie en ligne</button>
     <button class="btn" id="transferBtn" hidden>Continuer sur un autre appareil</button>
     <button class="btn" id="installBtn" hidden>Installer l’appli</button>
