@@ -296,13 +296,62 @@ export class App {
         if (i >= 0) rack.splice(i, 1);
       }
     }
+    // Coup préparé pendant le tour de l'adversaire : les lettres restent posées si leur case est encore libre.
+    const taken = new Set((prop?.move.placements ?? []).map((p) => p.r * SIZE + p.c));
+    let keptPending: PendingTile[] = [];
+    const back: RackTile[] = [];
+    let blocked = false;
+    for (const p of this.pending) {
+      const i = rack.indexOf(p.letter);
+      if (i < 0) continue;
+      rack.splice(i, 1);
+      keptPending.push(p);
+      if (this.game.board[p.r][p.c] || taken.has(p.r * SIZE + p.c)) blocked = true;
+    }
+    // Le coup de l'adversaire bloque le mot préparé (case prise, ou placement qui n'est plus jouable) :
+    // toutes les lettres préparées reviennent sur le chevalet.
+    if (!blocked && keptPending.length && this.preparedOk) {
+      const ps = keptPending.map((p) => ({ r: p.r, c: p.c, letter: p.letter === BLANK ? p.assigned : p.letter, blank: p.letter === BLANK }));
+      blocked = !evaluatePlacement(this.game.board, ps).ok;
+    }
+    if (blocked) {
+      back.push(...keptPending.map((p) => ({ id: p.id, letter: p.letter })));
+      keptPending = [];
+    }
     const kept: RackTile[] = [];
-    for (const t of [...this.tiles, ...this.pending]) {
+    for (const t of this.tiles) {
       const i = rack.indexOf(t.letter);
       if (i >= 0) { rack.splice(i, 1); kept.push({ id: t.id, letter: t.letter }); }
     }
-    this.tiles = [...kept, ...rack.map((letter) => ({ id: this.nextId++, letter }))];
-    this.pending = [];
+    this.tiles = [...kept, ...back, ...rack.map((letter) => ({ id: this.nextId++, letter }))];
+    this.pending = keptPending;
+    if (blocked) this.bumped = true;
+  }
+
+  /** Le dernier coup de l'adversaire a bloqué le coup préparé (lettres rendues au chevalet). */
+  private bumped = false;
+  /** Le coup préparé était jouable (géométrie) au dernier aperçu. */
+  private preparedOk = false;
+
+  /** Après un coup de l'adversaire : signale le coup préparé (prêt, ou lettres rendues). */
+  private preparedNotice() {
+    const blocked = this.bumped;
+    this.bumped = false;
+    const g = this.game;
+    if (g.over) return;
+    const who = this.mode === 'solo' ? 'L’ordinateur' : g.players[this.opp].name;
+    const before = this.el.status.textContent?.trim() ?? '';
+    const add = (msg: string, error = false) => this.setStatus(before ? `${before} ${msg}` : msg, error);
+    if (blocked) add(`${who} a bloqué votre coup préparé : vos lettres reviennent sur le chevalet.`, true);
+    else if (g.proposal) return;
+    else if (this.pending.length && g.current === this.me && evaluatePlacement(g.board, this.placements()).ok) {
+      add('Votre coup préparé est prêt : touchez « Jouer ».');
+    }
+  }
+
+  /** On peut poser et déplacer ses lettres, même pendant le tour de l'adversaire (coup préparé). */
+  private canPlace() {
+    return !!this.game && !this.game.over && !this.exchangeMode && !(this.mode === 'online' && this.busy);
   }
 
   private placements(): Placement[] {
@@ -409,6 +458,7 @@ export class App {
   private afterTurn() {
     if (this.mode === 'solo') saveGame(this.game);
     this.syncRack();
+    this.preparedNotice();
     this.render();
     this.celebrate();
     if (this.game.over) return void this.fxDone.then(() => this.showEnd());
@@ -718,6 +768,7 @@ export class App {
         this.setStatus(`Coup posé : ${opp} va l’accepter ou le contester…`);
       }
       this.syncRack();
+      if (!fresh) this.preparedNotice();
       this.render();
       this.celebrate();
       if (this.game.over && !prev?.over) void this.fxDone.then(() => this.showEnd());
@@ -990,8 +1041,9 @@ export class App {
   // ---------- Tuiles ----------
 
   private async placeTile(id: number, r: number, c: number): Promise<boolean> {
-    if (!this.canAct() || this.exchangeMode) return false;
+    if (!this.canPlace()) return false;
     if (this.game.board[r][c] || this.pending.some((p) => p.r === r && p.c === c)) return false;
+    if (this.game.proposal?.move.placements.some((p) => p.r === r && p.c === c)) return false;
     const onBoard = this.pending.find((p) => p.id === id);
     if (onBoard) {
       onBoard.r = r; onBoard.c = c;
@@ -1427,7 +1479,7 @@ export class App {
       if (!d.ghost) {
         if (Math.hypot(e.clientX - d.x, e.clientY - d.y) < 6) return;
         // Ranger son chevalet reste possible pendant le tour de l'adversaire.
-        if (this.exchangeMode || (!d.fromRack && !this.canAct())) return;
+        if (this.exchangeMode || (!d.fromRack && !this.canPlace())) return;
         d.rack = measureRack(d.src);
         d.ghost = d.src.cloneNode(true) as HTMLElement;
         d.ghost.classList.remove('selected', 'pop', 'dragging');
@@ -1547,12 +1599,13 @@ export class App {
   }
 
   private onTileClick(id: number) {
-    if (!this.canAct()) return;
     if (this.exchangeMode) {
+      if (!this.canAct()) return;
       if (this.exchangeSel.has(id)) this.exchangeSel.delete(id);
       else this.exchangeSel.add(id);
       return this.render();
     }
+    if (!this.canPlace()) return;
     if (this.pending.some((p) => p.id === id)) { this.selected = null; return this.returnTile(id); }
     this.selected = this.selected === id ? null : id;
     this.render();
@@ -1741,6 +1794,7 @@ export class App {
     const setPlayable = (v: boolean) => { if (playBtn) playBtn.disabled = !v; };
 
     if (!this.game || this.game.over) { out.innerHTML = ''; return setPlayable(false); }
+    if (!this.pending.length) this.preparedOk = false;
     const prop = this.game.proposal;
     if (prop) {
       const who = this.mode === 'solo' ? 'L’ordinateur' : esc(this.game.players[this.opp].name);
@@ -1750,9 +1804,10 @@ export class App {
         : `<span class="words">${words}</span><span class="score">${prop.move.score} pts</span><span class="muted">Accepter ou contester ?</span>`;
       return setPlayable(false);
     }
-    if (this.game.current !== this.me) {
-      const who = this.mode === 'solo' ? 'l’ordinateur' : esc(this.game.players[this.opp].name);
-      out.innerHTML = `<span class="muted">Au tour de ${who}…</span>`;
+    const myTurn = this.game.current === this.me;
+    const who = this.mode === 'solo' ? 'l’ordinateur' : esc(this.game.players[this.opp].name);
+    if (!myTurn && !this.pending.length) {
+      out.innerHTML = `<span class="muted">Au tour de ${who}… Vous pouvez préparer votre coup.</span>`;
       return setPlayable(false);
     }
     if (this.exchangeMode) { out.innerHTML = '<span class="muted">Mode échange</span>'; return setPlayable(false); }
@@ -1761,12 +1816,14 @@ export class App {
       return setPlayable(false);
     }
     const res = evaluatePlacement(this.game.board, this.placements());
+    this.preparedOk = res.ok;
     if (!res.ok) { out.innerHTML = `<span class="bad">${esc(res.error)}</span>`; return setPlayable(false); }
     const words = res.words.map((w) => w.word);
     // Mode fantasy : en mode normal, les mots du thème sont signalés (et comptés double) dès l'aperçu.
     const shown = this.game.variant ? null : applyTheme(this.game.theme, { placements: [], words: res.words, score: res.score });
     const label = (w: string) => (shown?.words.find((x) => x.word === w)?.themed ? `<b class="themed-word">✦ ${w}</b>` : w);
-    out.innerHTML = `<span class="words">${words.map(label).join(' · ')}</span><span class="score">${shown?.score ?? res.score} pts</span>`;
+    const later = myTurn ? '' : `<span class="muted">prêt pour votre tour</span>`;
+    out.innerHTML = `<span class="words">${words.map(label).join(' · ')}</span><span class="score">${shown?.score ?? res.score} pts</span>${later}`;
     // Modes challenge et hardcore : on ne sait pas si le mot est valide avant de le jouer.
     if (this.game.variant) return setPlayable(this.canAct());
     setPlayable(false);
@@ -1774,7 +1831,7 @@ export class App {
     if (token !== this.previewToken) return;
     if (invalid.length) {
       out.innerHTML = `<span class="words">${words.map((w) => (invalid.includes(w) ? `<s class="bad">${w}</s>` : label(w))).join(' · ')}</span>` +
-        `<span class="bad">absent du dictionnaire${this.mode === 'online' ? ' (le serveur tranchera)' : ''}</span>`;
+        `<span class="bad">absent du dictionnaire${this.mode === 'online' ? ' (le serveur tranchera)' : ''}</span>${later}`;
       // En ligne, seul le dictionnaire du serveur fait foi : on peut tenter le coup.
       setPlayable(this.mode === 'online' && this.canAct());
     } else setPlayable(this.canAct());
