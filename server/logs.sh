@@ -1,5 +1,5 @@
 #!/bin/sh
-# Affiche en direct le journal du relais sur alwaysdata (Ctrl+C pour quitter).
+# Affiche en direct le journal du serveur de jeu sur alwaysdata (Ctrl+C pour quitter).
 set -eu
 ACCOUNT=${ALWAYSDATA_ACCOUNT:-grullier}
 exec ssh -t "$ACCOUNT@ssh-$ACCOUNT.alwaysdata.net" \

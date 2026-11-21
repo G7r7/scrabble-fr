@@ -6,15 +6,20 @@
     "test": "vitest run",
     "dict": "node scripts/build-dict.mjs",
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "build": "tsc --noEmit && tsc --noEmit -p server && vite build",
+    "preview": "vite preview",
+    "server:build": "esbuild server/server.ts --bundle --platform=node --format=esm --target=node22 --external:ws --outfile=server/dist/server.mjs",
+    "server": "npm run server:build && node server/dist/server.mjs"
   },
   "license": "ISC",
   "devDependencies": {
+    "@types/node": "^22.20.5",
+    "@types/ws": "^8.18.2",
     "an-array-of-french-words": "^2.0.0",
     "typescript": "^7.0.2",
     "vite": "^7.3.8",
-    "vitest": "^5.1.0"
+    "vitest": "^5.1.0",
+    "esbuild": "^0.28.2"
   },
   "type": "module",
   "private": "true"

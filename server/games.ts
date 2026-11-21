@@ -1,0 +1,138 @@
+// Parties en ligne gardées par le serveur. Ce module ne connaît pas les WebSockets :
+// il reçoit les messages des joueurs et dit quoi envoyer à qui (testable sans réseau).
+import { newGame, type GameState, type Variant } from '../src/game/game';
+import { applyAction, parseAction, viewFor } from '../src/game/remote';
+import { CLOSE, cleanName, type ServerMsg } from '../src/net/protocol';
+
+export type SeatNo = 0 | 1;
+export interface Seat { token: string; name: string; left: boolean }
+export interface Room {
+  code: string;
+  seats: [Seat, Seat | null];
+  variant: Variant | null;
+  state: GameState | null;
+  /** Dernière activité (création, arrivée d'un joueur, coup joué), en ms. */
+  updated: number;
+}
+
+const DAY = 24 * 60 * 60 * 1000;
+/** Durées de conservation : partie jamais commencée, partie finie, partie en cours sans aucun coup. */
+export const TTL = { waiting: 2 * DAY, over: 3 * DAY, idle: 30 * DAY };
+const MAX_ROOMS = 5000;
+
+const isCode = (s: string) => /^[A-Z0-9]{6}$/.test(s);
+const isToken = (s: string) => /^[a-f0-9]{16,64}$/.test(s);
+
+export interface GamesIo {
+  /** Envoie un message au joueur `seat` de la partie s'il est connecté. */
+  send(room: Room, seat: SeatNo, msg: ServerMsg): void;
+  /** Mots absents du dictionnaire du serveur. */
+  invalidWords(words: string[]): string[];
+  /** Les parties ont changé (à sauvegarder). */
+  changed(): void;
+  now?: () => number;
+}
+
+export class Games {
+  rooms = new Map<string, Room>();
+  constructor(private io: GamesIo) {}
+  private now() { return this.io.now?.() ?? Date.now(); }
+
+  /**
+   * Arrivée d'un joueur (connexion ou reconnexion). `create` : la personne crée la partie avec ce code.
+   * Renvoie sa place, ou un code de fermeture si elle est refusée.
+   */
+  join(code: string, token: string, create: boolean): { room: Room; seat: SeatNo } | { close: number } {
+    if (!isCode(code) || !isToken(token)) return { close: CLOSE.BAD_REQUEST };
+    let room = this.rooms.get(code);
+    if (!room) {
+      if (!create) return { close: CLOSE.NOT_FOUND };
+      if (this.rooms.size >= MAX_ROOMS) return { close: CLOSE.BUSY };
+      room = { code, seats: [{ token, name: '', left: false }, null], variant: null, state: null, updated: this.now() };
+      this.rooms.set(code, room);
+      this.io.changed();
+      return { room, seat: 0 };
+    }
+    const seat = room.seats.findIndex((s) => s?.token === token);
+    if (seat >= 0) return { room, seat: seat as SeatNo };
+    if (create) return { close: CLOSE.CODE_TAKEN };
+    if (room.seats[1]) return { close: CLOSE.ROOM_FULL };
+    room.seats[1] = { token, name: '', left: false };
+    room.updated = this.now();
+    this.io.changed();
+    return { room, seat: 1 };
+  }
+
+  /** Message d'un joueur déjà installé à sa place. */
+  async message(room: Room, seat: SeatNo, raw: unknown) {
+    if (!raw || typeof raw !== 'object') return;
+    const m = raw as Record<string, unknown>;
+    const me = room.seats[seat]!;
+    if (m.type === 'hello') {
+      me.name = cleanName(m.name) || (seat === 0 ? 'Joueur 1' : 'Joueur 2');
+      me.left = false;
+      if (seat === 0 && !room.state && m.options && typeof m.options === 'object') {
+        const v = (m.options as Record<string, unknown>).variant;
+        room.variant = v === 'challenge' || v === 'hardcore' ? v : null;
+      }
+      if (!room.state && room.seats[0].name && room.seats[1]?.name) return this.start(room);
+      if (!room.state) return this.io.send(room, seat, { type: 'waiting' });
+      if (room.state.players[seat].name !== me.name) {
+        room.state.players[seat].name = me.name;
+        this.io.changed();
+        return this.broadcast(room);
+      }
+      return this.sendState(room, seat);
+    }
+    if (m.type === 'action') {
+      if (!room.state) return this.io.send(room, seat, { type: 'error', message: 'La partie n’a pas commencé.' });
+      const action = parseAction(m.action);
+      if (!action) return this.io.send(room, seat, { type: 'error', message: 'Coup mal formé.' });
+      const err = await applyAction(room.state, seat, action, async (w) => this.io.invalidWords(w));
+      if (err) return this.io.send(room, seat, { type: 'error', message: err });
+      room.updated = this.now();
+      this.io.changed();
+      return this.broadcast(room);
+    }
+    if (m.type === 'rematch') {
+      if (room.state?.over) this.start(room);
+      return;
+    }
+    if (m.type === 'bye') {
+      me.left = true;
+      const other = room.seats[seat === 0 ? 1 : 0];
+      if (!other || other.left) this.rooms.delete(room.code);
+      else this.io.send(room, seat === 0 ? 1 : 0, { type: 'left' });
+      this.io.changed();
+    }
+  }
+
+  private start(room: Room) {
+    const [a, b] = room.seats;
+    room.state = newGame('moyen', { names: [a.name, b!.name] }, { variant: room.variant });
+    room.updated = this.now();
+    this.io.changed();
+    this.broadcast(room);
+  }
+
+  private sendState(room: Room, seat: SeatNo) {
+    if (room.state) this.io.send(room, seat, { type: 'state', state: viewFor(room.state, seat), you: seat });
+  }
+  private broadcast(room: Room) { this.sendState(room, 0); this.sendState(room, 1); }
+
+  /** Supprime les parties trop anciennes ; renvoie leurs codes. */
+  sweep(): string[] {
+    const now = this.now(), gone: string[] = [];
+    for (const [code, r] of this.rooms) {
+      const ttl = !r.state ? TTL.waiting : r.state.over ? TTL.over : TTL.idle;
+      if (now - r.updated > ttl) { this.rooms.delete(code); gone.push(code); }
+    }
+    if (gone.length) this.io.changed();
+    return gone;
+  }
+
+  toJSON() { return [...this.rooms.values()]; }
+  load(rooms: Room[]) {
+    for (const r of rooms) if (r && isCode(r.code) && r.seats?.[0]) this.rooms.set(r.code, r);
+  }
+}

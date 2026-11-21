@@ -1,20 +1,8 @@
-// Liaison avec le relais WebSocket (dossier server/). Le relais ne fait que transmettre les messages
-// entre l'hôte et l'invité ; le navigateur de l'hôte arbitre la partie.
-import type { GameState } from '../game/game';
-import type { Action } from '../game/remote';
+// Liaison avec le serveur de jeu (dossier server/), qui garde les parties et arbitre les coups.
+import type { ClientMsg, ServerMsg } from './protocol';
 
 const RELAY_URL: string = import.meta.env.VITE_RELAY_URL ?? 'ws://localhost:8787';
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-
-export type HostMsg =
-  | { type: 'state'; state: GameState; you: 0 | 1 }
-  | { type: 'error'; message: string }
-  | { type: 'bye' };
-export type GuestMsg =
-  | { type: 'hello'; name: string }
-  | { type: 'action'; action: Action }
-  | { type: 'rematch' }
-  | { type: 'bye' };
 
 export function newCode(): string {
   const a = crypto.getRandomValues(new Uint8Array(6));
@@ -25,29 +13,29 @@ export const newToken = () =>
 export const normalizeCode = (s: string) => s.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6);
 export const isCode = (s: string) => /^[A-Z0-9]{6}$/.test(s);
 
-/** Fermetures définitives envoyées par le relais (voir server/server.mjs). */
+/** Fermetures définitives envoyées par le serveur (voir CLOSE dans protocol.ts). */
 const FATAL: Record<number, string> = {
   4000: 'Requête refusée par le serveur.',
   4001: 'Ce code est déjà pris.',
   4003: 'Cette partie est déjà complète.',
-  4004: 'Partie introuvable : vérifiez le lien, ou l’hôte a fermé la partie.',
+  4004: 'Partie introuvable : vérifiez le lien. Elle a peut-être expiré ou été quittée par les deux joueurs.',
   4005: 'Cette partie a été ouverte dans un autre onglet.',
   4029: 'Serveur saturé, réessayez dans un instant.',
 };
 export const CODE_TAKEN = FATAL[4001];
 
-export interface LinkHandlers<In> {
-  /** Connecté au relais. */
+export interface LinkHandlers {
+  /** Connecté au serveur. */
   onOpen?: () => void;
   /** L'adversaire vient d'arriver ou de partir. */
   onPeer: (online: boolean) => void;
-  onMessage: (msg: In) => void;
+  onMessage: (msg: ServerMsg) => void;
   /** `fatal` : la liaison est abandonnée (pas de reconnexion). */
   onError: (text: string, fatal: boolean) => void;
 }
 
-/** Liaison d'un joueur au relais, avec reconnexion automatique. */
-export class RelayLink<In, Out> {
+/** Liaison d'un joueur au serveur, avec reconnexion automatique. */
+export class GameLink {
   private ws: WebSocket | null = null;
   private closed = false;
   private retries = 0;
@@ -55,9 +43,9 @@ export class RelayLink<In, Out> {
   peerOnline = false;
 
   constructor(
-    public code: string, role: 'host' | 'guest', token: string, private h: LinkHandlers<In>,
+    public code: string, token: string, create: boolean, private h: LinkHandlers,
   ) {
-    this.url = `${RELAY_URL}?code=${code}&role=${role}&token=${token}`;
+    this.url = `${RELAY_URL}?code=${code}&token=${token}${create ? '&create=1' : ''}`;
     this.connect();
   }
   private url: string;
@@ -74,7 +62,7 @@ export class RelayLink<In, Out> {
         this.peerOnline = !!(msg as { online?: unknown }).online;
         return this.h.onPeer(this.peerOnline);
       }
-      this.h.onMessage(msg as In);
+      this.h.onMessage(msg as ServerMsg);
     };
     ws.onclose = (e) => {
       if (ws !== this.ws || this.closed) return;
@@ -94,11 +82,11 @@ export class RelayLink<In, Out> {
 
   get connected() { return this.ws?.readyState === WebSocket.OPEN; }
 
-  send(msg: Out) {
+  send(msg: ClientMsg) {
     if (this.ws?.readyState === WebSocket.OPEN) this.ws.send(JSON.stringify(msg));
   }
 
-  close(bye?: Out) {
+  close(bye?: ClientMsg) {
     if (bye) this.send(bye);
     this.closed = true;
     if (this.timer) clearTimeout(this.timer);
@@ -107,6 +95,3 @@ export class RelayLink<In, Out> {
     setTimeout(() => ws?.close(1000), 100);
   }
 }
-
-export type HostLink = RelayLink<GuestMsg, HostMsg>;
-export type GuestLink = RelayLink<HostMsg, GuestMsg>;

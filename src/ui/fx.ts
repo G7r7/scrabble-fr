@@ -144,6 +144,21 @@ export class Sound {
     const o = this.tone(150, t, 0.25, 'sawtooth', 0.15);
     o.frequency.exponentialRampToValueAtTime(90, t + 0.25);
   }
+  /** « CHALLENGE ! » : roulement de tambour puis coup de cymbale grave. */
+  challenge() {
+    const t = this.now();
+    if (t === null) return;
+    for (let i = 0; i < 8; i++) this.clack(t + i * 0.05, 0.6 + i * 0.05, 0.25 + i * 0.04);
+    this.tone(midi(43), t + 0.42, 0.6, 'sawtooth', 0.18);
+    this.tone(midi(50), t + 0.42, 0.6, 'square', 0.1);
+  }
+  /** Verdict du challenge : fanfare (gagné) ou trombone triste (raté). */
+  verdict(win: boolean) {
+    const t = this.now();
+    if (t === null) return;
+    const notes = win ? [67, 72, 76, 79] : [62, 61, 60, 55];
+    notes.forEach((n, i) => this.tone(midi(n), t + i * (win ? 0.08 : 0.2), i === notes.length - 1 ? 0.6 : 0.2, win ? 'triangle' : 'sawtooth', win ? 0.3 : 0.14));
+  }
   soft() { const t = this.now(); if (t !== null) this.tone(midi(67), t, 0.2, 'sine', 0.2); }
   turn() {
     const t = this.now();
@@ -324,6 +339,27 @@ export class Fx {
       this.confetti(b);
     } else this.sound.total(score);
     this.float(`+${score}`, center, sum >= 30 || bingo ? 'total big' : 'total');
+  }
+
+  /** Durée du tampon animé (ms). */
+  get stampMs() { return this.reduced ? 900 : 1900; }
+
+  /**
+   * Grand tampon au centre de l'écran : le titre claque lettre par lettre, puis le verdict.
+   * `kind` : win (challenge réussi), fail (challenge raté), bad (pénalité hardcore).
+   */
+  stamp(title: string, sub: string, kind: 'win' | 'fail' | 'bad'): Promise<void> {
+    const el = document.createElement('div');
+    el.className = `fx-stamp ${kind}`;
+    el.setAttribute('role', 'status');
+    el.innerHTML = `<div class="fx-stamp-title">${[...title].map((ch, i) =>
+      `<span style="--i:${i}">${ch === ' ' ? '&nbsp;' : ch}</span>`).join('')}</div><div class="fx-stamp-sub">${sub}</div>`;
+    document.body.appendChild(el);
+    if (title.startsWith('CHALLENGE')) {
+      this.sound.challenge();
+      setTimeout(() => this.sound.verdict(kind === 'win'), this.reduced ? 0 : 750);
+    } else this.sound.invalid();
+    return new Promise((resolve) => setTimeout(() => { el.remove(); resolve(); }, this.stampMs));
   }
 
   private confetti(b: DOMRect) {

@@ -1,13 +1,16 @@
 import { BLANK, RACK_SIZE, SIZE } from './constants';
 import { evaluatePlacement } from './rules';
-import { exchange, pass, playMove, type GameState } from './game';
+import { HARDCORE_PENALTY, accept, challenge, exchange, pass, playMove, propose, refuse, type GameState } from './game';
 import type { Placement } from './types';
 
-/** Action envoyée par un joueur distant. L'hôte la vérifie entièrement avant de l'appliquer. */
+/** Action envoyée par un joueur. Le serveur la vérifie entièrement avant de l'appliquer. */
 export type Action =
   | { type: 'play'; placements: Placement[] }
   | { type: 'exchange'; letters: string[] }
-  | { type: 'pass' };
+  | { type: 'pass' }
+  /** Mode challenge : décision sur le coup que l'adversaire vient de poser. */
+  | { type: 'accept' }
+  | { type: 'challenge' };
 
 const isLetter = (l: unknown): l is string => typeof l === 'string' && /^[A-Z]$/.test(l);
 const isRackLetter = (l: unknown): l is string => l === BLANK || isLetter(l);
@@ -17,7 +20,7 @@ const isCoord = (n: unknown): n is number => Number.isInteger(n) && (n as number
 export function parseAction(x: unknown): Action | null {
   if (!x || typeof x !== 'object') return null;
   const a = x as Record<string, unknown>;
-  if (a.type === 'pass') return { type: 'pass' };
+  if (a.type === 'pass' || a.type === 'accept' || a.type === 'challenge') return { type: a.type };
   if (a.type === 'exchange') {
     const ls = a.letters;
     if (!Array.isArray(ls) || ls.length < 1 || ls.length > RACK_SIZE || !ls.every(isRackLetter)) return null;
@@ -58,6 +61,17 @@ export async function applyAction(
   invalidWords: (words: string[]) => Promise<string[]>,
 ): Promise<string | null> {
   if (s.over) return 'La partie est terminée.';
+  if (s.proposal) {
+    if (action.type !== 'accept' && action.type !== 'challenge') return 'Un coup attend d’être accepté ou contesté.';
+    if (s.proposal.player === player) return 'C’est à votre adversaire de décider.';
+    if (action.type === 'accept') { accept(s); return null; }
+    const turn = s.history.length;
+    const invalid = await invalidWords(s.proposal.move.words.map((w) => w.word));
+    if (s.history.length !== turn || !s.proposal) return 'La partie a changé entre-temps.';
+    challenge(s, invalid);
+    return null;
+  }
+  if (action.type === 'accept' || action.type === 'challenge') return 'Aucun coup à juger.';
   if (s.current !== player) return 'Ce n’est pas votre tour.';
   const rack = s.players[player].rack;
 
@@ -74,10 +88,13 @@ export async function applyAction(
   if (!rackHas(rack, ps.map((p) => (p.blank ? BLANK : p.letter)))) return 'Ces lettres ne sont pas sur votre chevalet.';
   const res = evaluatePlacement(s.board, ps);
   if (!res.ok) return res.error;
+  // Mode challenge : pas de vérification maintenant, c'est l'adversaire qui décide de contester.
+  if (s.variant === 'challenge') { propose(s, { placements: ps, words: res.words, score: res.score }); return null; }
   const turn = s.history.length;
   const invalid = await invalidWords(res.words.map((w) => w.word));
-  if (invalid.length) return `Mot${invalid.length > 1 ? 's' : ''} refusé${invalid.length > 1 ? 's' : ''} par le dictionnaire de l’hôte : ${invalid.join(', ')}`;
   if (s.history.length !== turn || s.current !== player || s.over) return 'La partie a changé entre-temps.';
+  if (invalid.length && s.variant === 'hardcore') { refuse(s, invalid, HARDCORE_PENALTY); return null; }
+  if (invalid.length) return `Mot${invalid.length > 1 ? 's' : ''} absent${invalid.length > 1 ? 's' : ''} du dictionnaire : ${invalid.join(', ')}`;
   playMove(s, { placements: ps, words: res.words, score: res.score });
   return null;
 }

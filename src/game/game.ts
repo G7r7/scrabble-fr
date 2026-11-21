@@ -5,14 +5,27 @@ import { rackValue } from './rules';
 import type { Board, FormedWord, Move } from './types';
 import type { Level } from '../ai/player';
 
+export type Variant = 'challenge' | 'hardcore';
+export const VARIANTS: { id: Variant | 'normal'; label: string; help: string }[] = [
+  { id: 'normal', label: 'Normal', help: 'Les mots sont vérifiés avant d’être joués.' },
+  { id: 'challenge', label: 'Challenge', help: 'Aucune vérification avant de jouer : l’adversaire accepte le coup ou le conteste.' },
+  { id: 'hardcore', label: 'Hardcore', help: 'Chaque coup est contrôlé d’office : un mot refusé coûte 10 points et le tour.' },
+];
+export const HARDCORE_PENALTY = 10;
+
 export interface Player { name: string; rack: string[]; score: number; isAi: boolean }
 
 export interface HistoryEntry {
   player: number;
-  kind: 'play' | 'exchange' | 'pass' | 'end';
+  kind: 'play' | 'exchange' | 'pass' | 'invalid' | 'challenge' | 'end';
   text: string;
   score: number;
+  /** Coup soumis au jugement de l'adversaire qui l'a contesté (mode challenge). */
+  challenged?: boolean;
 }
+
+/** Mode challenge : coup posé, en attente de la décision de l'adversaire. */
+export interface Proposal { player: 0 | 1; move: Move }
 
 export interface GameState {
   board: Board;
@@ -28,12 +41,20 @@ export interface GameState {
   lastWords?: FormedWord[];
   /** Partie en ligne entre deux humains (pas d'ordinateur, pas de sauvegarde locale). */
   online?: boolean;
+  /**
+   * Variante (absente = normale : un mot refusé est simplement rejeté, on rejoue).
+   * - challenge : on ne sait pas si un mot est valide avant de le jouer ; l'adversaire accepte ou conteste.
+   * - hardcore : chaque coup est contrôlé d'office ; un mot refusé coûte 10 points et le tour.
+   */
+  variant?: Variant;
+  /** Mode challenge : coup posé que l'adversaire doit accepter ou contester. */
+  proposal?: Proposal | null;
 }
 
 export const HUMAN = 0, AI = 1;
 const MAX_SCORELESS = 6;
 
-export function newGame(level: Level, online?: { names: [string, string] }): GameState {
+export function newGame(level: Level, online?: { names: [string, string] } | null, opts: { variant?: Variant | null } = {}): GameState {
   const bag = newBag();
   const [n0, n1] = online?.names ?? ['Vous', 'Ordinateur'];
   const players: [Player, Player] = [
@@ -45,6 +66,7 @@ export function newGame(level: Level, online?: { names: [string, string] }): Gam
     current: Math.random() < 0.5 ? 0 : 1,
     scorelessTurns: 0, over: false, history: [], level, lastMove: [],
     ...(online ? { online: true } : {}),
+    ...(opts.variant ? { variant: opts.variant } : {}),
   };
 }
 
@@ -97,6 +119,52 @@ export function exchange(s: GameState, letters: string[]) {
   shuffle(s.bag);
   s.history.push({ player: s.current, kind: 'exchange', score: 0, text: `Échange de ${letters.length} lettre${letters.length > 1 ? 's' : ''}` });
   scoreless(s);
+}
+
+/**
+ * Le coup contenait des mots refusés : les lettres reviennent sur le chevalet et le tour est perdu
+ * (après un challenge réussi, ou en mode hardcore avec une pénalité).
+ */
+export function refuse(s: GameState, invalid: string[], penalty = 0) {
+  const n = invalid.length;
+  s.players[s.current].score -= penalty;
+  s.history.push({
+    player: s.current, kind: 'invalid', score: -penalty, ...(penalty ? {} : { challenged: true }),
+    text: `Mot${n > 1 ? 's' : ''} refusé${n > 1 ? 's' : ''} : ${invalid.join(', ')} — ${penalty ? `−${penalty} points, ` : ''}tour perdu`,
+  });
+  scoreless(s);
+}
+
+/** Mode challenge : le joueur pose son coup, sans savoir s'il est valide ; l'adversaire va trancher. */
+export function propose(s: GameState, move: Move) {
+  s.proposal = { player: s.current, move };
+}
+
+/** L'adversaire accepte le coup proposé. */
+export function accept(s: GameState) {
+  const p = s.proposal;
+  if (!p) throw new Error('Aucun coup à accepter');
+  s.proposal = null;
+  playMove(s, p.move);
+}
+
+/**
+ * L'adversaire conteste le coup proposé. `invalid` : mots refusés par le dictionnaire.
+ * Challenge réussi : le coup est annulé et son auteur perd son tour.
+ * Challenge raté : le coup compte et c'est celui qui a contesté qui perd son tour.
+ */
+export function challenge(s: GameState, invalid: string[]) {
+  const p = s.proposal;
+  if (!p) throw new Error('Aucun coup à contester');
+  s.proposal = null;
+  if (invalid.length) return refuse(s, invalid);
+  playMove(s, p.move);
+  for (let i = s.history.length - 1; i >= 0; i--) {
+    if (s.history[i].kind === 'play') { s.history[i].challenged = true; break; }
+  }
+  if (s.over) return;
+  s.history.push({ player: s.current, kind: 'challenge', score: 0, challenged: true, text: 'Challenge raté — tour perdu' });
+  nextTurn(s);
 }
 
 export function pass(s: GameState) {

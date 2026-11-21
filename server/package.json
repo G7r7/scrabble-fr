@@ -1,14 +1,16 @@
 {
   "name": "scrabble-fr-relay",
   "version": "1.0.0",
-  "description": "Relais WebSocket du jeu en ligne de Scrabble FR",
+  "description": "Serveur de jeu en ligne de Scrabble FR (fichier compilé : dist/server.mjs)",
   "private": true,
   "type": "module",
-  "main": "server.mjs",
+  "main": "dist/server.mjs",
   "scripts": {
-    "start": "node server.mjs"
+    "start": "node dist/server.mjs"
   },
-  "engines": { "node": ">=18" },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
     "ws": "^8.18.3"
   }

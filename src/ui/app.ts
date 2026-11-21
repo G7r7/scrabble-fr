@@ -2,14 +2,13 @@ import { BLANK, BONUS, CENTER, RACK_SIZE, SIZE, letterValue } from '../game/cons
 import { evaluatePlacement } from '../game/rules';
 import { shuffle } from '../game/bag';
 import {
-  AI, exchange, loadGame, newGame, pass, playMove, saveGame, winnerText, type GameState, type HistoryEntry,
+  AI, HARDCORE_PENALTY, HUMAN, VARIANTS, accept, challenge, exchange, loadGame, newGame, pass, playMove, propose, refuse,
+  saveGame, winnerText, type GameState, type HistoryEntry, type Variant,
 } from '../game/game';
-import { applyAction, parseAction, viewFor, type Action } from '../game/remote';
+import type { Action } from '../game/remote';
 import type { Placement } from '../game/types';
-import {
-  CODE_TAKEN, RelayLink, isCode, newCode, newToken, normalizeCode,
-  type GuestLink, type GuestMsg, type HostLink, type HostMsg,
-} from '../net/online';
+import { CODE_TAKEN, GameLink, isCode, newCode, newToken, normalizeCode } from '../net/online';
+import { cleanName, type GameOptions, type ServerMsg } from '../net/protocol';
 import type { Level } from '../ai/player';
 import { Engine } from '../engine';
 import { Fx, Sound } from './fx';
@@ -26,13 +25,16 @@ const BONUS_LABEL: Record<string, string> = { MT: 'Mot<br>×3', MD: 'Mot<br>×2'
 const LEVELS: Level[] = ['facile', 'moyen', 'difficile'];
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const $ = <T extends HTMLElement = HTMLElement>(root: ParentNode, sel: string) => root.querySelector(sel) as T;
-const cleanName = (s: unknown) =>
-  typeof s === 'string' ? s.replace(/[\u0000-\u001f\u007f]/g, '').replace(/\s+/g, ' ').trim().slice(0, 16) : '';
 function lsGet(k: string) { try { return localStorage.getItem(k); } catch { return null; } }
 function lsSet(k: string, v: string) { try { localStorage.setItem(k, v); } catch { /* rien */ } }
 function lsDel(k: string) { try { localStorage.removeItem(k); } catch { /* rien */ } }
-const HOST_SAVE = 'scrabble-fr-hote';
-interface HostSave { code: string; token: string; state: GameState }
+/** Jeton secret du joueur pour une partie en ligne (suffixé du code de la partie). */
+const TOKEN_KEY = 'scrabble-fr-jeton-';
+const VARIANT_KEY = 'scrabble-fr-variante';
+const variantOf = (v: unknown): Variant | null => (v === 'challenge' || v === 'hardcore' ? v : null);
+/** Première lettre en minuscule (pour enchaîner « Nom : mot refusé… »). */
+const lcFirst = (t: string) => t.charAt(0).toLowerCase() + t.slice(1);
+const variantLabel = (v: Variant | null | undefined) => VARIANTS.find((x) => x.id === (v ?? 'normal'))!.label;
 function setUrlCode(code: string | null) {
   const url = new URL(location.href);
   if (code) url.searchParams.set('partie', code); else url.searchParams.delete('partie');
@@ -56,12 +58,12 @@ export class App {
   private historySeen = 0;
   private land = matchMedia('(min-aspect-ratio: 1/1) and (min-width: 760px)');
 
-  // Jeu en ligne : « solo » contre l'ordinateur, « host » (crée la partie et arbitre), « guest » (rejoint).
-  private mode: 'solo' | 'host' | 'guest' = 'solo';
+  // « solo » contre l'ordinateur, « online » : partie gardée et arbitrée par le serveur.
+  private mode: 'solo' | 'online' = 'solo';
   private me: 0 | 1 = 0;
-  private host: HostLink | null = null;
-  private guest: GuestLink | null = null;
-  private hostToken = '';
+  private link: GameLink | null = null;
+  /** Partie en ligne créée, personne ne l'a encore rejointe. */
+  private waiting = false;
   private oppConnected = false;
 
   // Effets : sons, animation du dernier coup, compteurs de points.
@@ -74,7 +76,7 @@ export class App {
 
   private el = {} as Record<
     'board' | 'rack' | 'preview' | 'scores' | 'bag' | 'history' | 'actions' | 'dict' | 'status' | 'level' |
-    'levelWrap' | 'onlineBtn' | 'newGame' | 'onlineInfo' | 'onlineBody' | 'sfxBtn' | 'musicBtn' | 'notifBtn',
+    'levelWrap' | 'onlineBtn' | 'newGame' | 'onlineInfo' | 'onlineBody' | 'sfxBtn' | 'musicBtn' | 'notifBtn' | 'variant',
     HTMLElement
   >;
 
@@ -83,7 +85,7 @@ export class App {
   async start() {
     this.root.innerHTML = TEMPLATE;
     for (const k of ['board', 'rack', 'preview', 'scores', 'bag', 'history', 'actions', 'dict', 'status', 'level',
-      'levelWrap', 'onlineBtn', 'newGame', 'onlineInfo', 'onlineBody', 'sfxBtn', 'musicBtn', 'notifBtn'] as const) {
+      'levelWrap', 'onlineBtn', 'newGame', 'onlineInfo', 'onlineBody', 'sfxBtn', 'musicBtn', 'notifBtn', 'variant'] as const) {
       this.el[k] = $(this.root, `#${k}`);
     }
     this.buildBoard();
@@ -100,22 +102,19 @@ export class App {
     loading.remove();
 
     const saved = loadGame();
-    this.game = saved && !saved.over ? saved : newGame(this.readLevel());
+    this.game = saved && !saved.over ? saved : newGame(this.readLevel(), null, { variant: this.variantPref() });
     (this.el.level as HTMLSelectElement).value = this.game.level;
+    (this.el.variant as HTMLSelectElement).value = this.variantPref() ?? 'normal';
     this.seen = this.game.history.length;
     this.syncRack();
     this.render();
-    if (this.game.current === AI && !this.game.over) void this.aiTurn();
+    this.soloNext();
 
+    lsDel('scrabble-fr-hote'); // ancienne sauvegarde de l'hôte (avant le serveur de jeu)
     const code = normalizeCode(new URLSearchParams(location.search).get('partie') ?? '');
-    let hosted: HostSave | null = null;
-    try { hosted = JSON.parse(lsGet(HOST_SAVE) ?? 'null'); } catch { /* rien */ }
-    if (hosted && isCode(code) && hosted.code === code && !hosted.state.over) {
-      // L'hôte a rechargé la page : il reprend sa partie, l'invité se reconnectera.
-      this.openHost(code, hosted.token, hosted.state);
-    } else if (isCode(code)) {
-      // Déjà venu sur cette partie (rechargement) : on se reconnecte directement.
-      if (lsGet(`scrabble-fr-jeton-${code}`) && lsGet('scrabble-fr-nom')) this.joinGame(code);
+    if (isCode(code)) {
+      // Déjà venu sur cette partie (rechargement, ou retour plus tard) : on se reconnecte directement.
+      if (lsGet(`${TOKEN_KEY}${code}`) && lsGet('scrabble-fr-nom')) this.joinGame(code);
       else this.lobby('menu', code);
     }
   }
@@ -174,18 +173,29 @@ export class App {
     return 'moyen';
   }
 
+  private variantPref(): Variant | null { return variantOf(lsGet(VARIANT_KEY)); }
+
   private startNewGame() {
     if (this.mode !== 'solo') return this.quitOnline();
     if (this.busy) return;
     if (!this.game.over && this.game.history.length > 0 && !confirm('Abandonner la partie en cours ?')) return;
-    this.game = newGame((this.el.level as HTMLSelectElement).value as Level);
+    this.game = newGame((this.el.level as HTMLSelectElement).value as Level, null, { variant: this.variantPref() });
     this.resetBoardUi();
+    if (this.game.variant) this.setStatus(`Nouvelle partie en mode ${variantLabel(this.game.variant)}.`);
     this.afterTurn();
   }
 
   /** Aligne les tuiles affichées sur le chevalet réel, en conservant l'ordre choisi par le joueur. */
   private syncRack() {
     const rack = [...this.game.players[this.me].rack];
+    // Mode challenge : les lettres du coup proposé sont sur le plateau, pas sur le chevalet.
+    const prop = this.game.proposal;
+    if (prop?.player === this.me) {
+      for (const p of prop.move.placements) {
+        const i = rack.indexOf(p.blank ? BLANK : p.letter);
+        if (i >= 0) rack.splice(i, 1);
+      }
+    }
     const kept: RackTile[] = [];
     for (const t of [...this.tiles, ...this.pending]) {
       const i = rack.indexOf(t.letter);
@@ -204,8 +214,15 @@ export class App {
   }
 
   private canAct() {
-    return !this.busy && !this.game.over && this.game.current === this.me &&
-      (this.mode !== 'guest' || this.oppConnected);
+    return !this.busy && !this.game.over && this.game.current === this.me && !this.game.proposal &&
+      (this.mode !== 'online' || !!this.link?.connected);
+  }
+
+  /** Mode challenge : l'adversaire a posé un coup, à nous d'accepter ou de contester. */
+  private canRespond() {
+    const p = this.game.proposal;
+    return !!p && p.player !== this.me && !this.busy && !this.game.over &&
+      (this.mode !== 'online' || !!this.link?.connected);
   }
 
   private get opp(): 0 | 1 { return this.me === 0 ? 1 : 0; }
@@ -215,16 +232,35 @@ export class App {
     const ps = this.placements();
     const res = evaluatePlacement(this.game.board, ps);
     if (!res.ok) { this.sound.invalid(); return this.setStatus(res.error, true); }
-    // L'invité soumet son coup à l'hôte, dont le dictionnaire fait foi.
-    if (this.mode === 'guest') return this.sendAction({ type: 'play', placements: ps });
-    const invalid = await this.engine.invalidWords(res.words.map((w) => w.word));
-    if (invalid.length) this.sound.invalid();
-    if (invalid.length) return this.setStatus(`Mot${invalid.length > 1 ? 's' : ''} absent${invalid.length > 1 ? 's' : ''} du dictionnaire : ${invalid.join(', ')}`, true);
+    // En ligne, le serveur vérifie le coup avec son dictionnaire.
+    if (this.mode === 'online') return this.sendAction({ type: 'play', placements: ps });
+    const g = this.game;
+    const move = { placements: ps, words: res.words, score: res.score };
     // On retire les tuiles posées pour que syncRack n'en garde que les restantes.
     const placedIds = new Set(this.pending.map((p) => p.id));
-    this.pending = [];
-    playMove(this.game, { placements: ps, words: res.words, score: res.score });
-    this.tiles = this.tiles.filter((t) => !placedIds.has(t.id));
+    const commit = () => { this.pending = []; this.tiles = this.tiles.filter((t) => !placedIds.has(t.id)); };
+    if (g.variant === 'challenge') {
+      commit();
+      propose(g, move);
+      this.setStatus('L’ordinateur examine votre coup…');
+      return this.afterTurn();
+    }
+    this.busy = true;
+    const invalid = await this.engine.invalidWords(res.words.map((w) => w.word));
+    this.busy = false;
+    if (g !== this.game) return;
+    if (invalid.length && g.variant === 'hardcore') {
+      this.recallAll();
+      refuse(g, invalid, HARDCORE_PENALTY);
+      this.setStatus(this.describe(g.history[g.history.length - 1]), true);
+      return this.afterTurn();
+    }
+    if (invalid.length) {
+      this.sound.invalid();
+      return this.setStatus(`Mot${invalid.length > 1 ? 's' : ''} absent${invalid.length > 1 ? 's' : ''} du dictionnaire : ${invalid.join(', ')}`, true);
+    }
+    commit();
+    playMove(g, move);
     this.setStatus(`Vous marquez ${res.score} points.`);
     this.afterTurn();
   }
@@ -233,7 +269,7 @@ export class App {
     if (!this.canAct()) return;
     if (!confirm('Passer votre tour ?')) return;
     this.recallAll();
-    if (this.mode === 'guest') return this.sendAction({ type: 'pass' });
+    if (this.mode === 'online') return this.sendAction({ type: 'pass' });
     pass(this.game);
     this.afterTurn();
   }
@@ -251,7 +287,7 @@ export class App {
   private confirmExchange() {
     if (!this.exchangeSel.size) return this.setStatus('Sélectionnez au moins une lettre.', true);
     const letters = this.tiles.filter((t) => this.exchangeSel.has(t.id)).map((t) => t.letter);
-    if (this.mode === 'guest') {
+    if (this.mode === 'online') {
       this.exchangeMode = false;
       this.exchangeSel.clear();
       return this.sendAction({ type: 'exchange', letters });
@@ -266,15 +302,64 @@ export class App {
 
   private afterTurn() {
     if (this.mode === 'solo') saveGame(this.game);
-    if (this.mode === 'host' && this.host) {
-      this.host.send({ type: 'state', state: viewFor(this.game, 1), you: 1 });
-      lsSet(HOST_SAVE, JSON.stringify({ code: this.host.code, token: this.hostToken, state: this.game } satisfies HostSave));
-    }
     this.syncRack();
     this.render();
     this.celebrate();
     if (this.game.over) return void this.fxDone.then(() => this.showEnd());
-    if (this.mode === 'solo' && this.game.players[this.game.current].isAi) void this.aiTurn();
+    this.soloNext();
+  }
+
+  /** Contre l'ordinateur : le fait jouer, ou juger le coup proposé, si c'est à lui. */
+  private soloNext() {
+    const g = this.game;
+    if (this.mode !== 'solo' || g.over || this.busy) return;
+    if (g.proposal) { if (g.proposal.player === HUMAN) void this.aiRespond(); return; }
+    if (g.players[g.current].isAi) void this.aiTurn();
+  }
+
+  /** Mode challenge : l'ordinateur accepte ou conteste votre coup (il se trompe parfois, selon le niveau). */
+  private async aiRespond() {
+    const g = this.game;
+    const p = g.proposal;
+    if (!p) return;
+    this.busy = true;
+    this.render();
+    const [invalid] = await Promise.all([this.engine.invalidWords(p.move.words.map((w) => w.word)), delay(900)]);
+    this.busy = false;
+    if (g !== this.game || g.proposal !== p) return;
+    const odds = invalid.length
+      ? { facile: 0.5, moyen: 0.8, difficile: 1 }[g.level]
+      : { facile: 0.1, moyen: 0.04, difficile: 0 }[g.level];
+    if (Math.random() < odds) {
+      challenge(g, invalid);
+      this.setStatus(invalid.length ? 'L’ordinateur conteste… et il a raison ! Vous perdez votre tour.'
+        : `L’ordinateur conteste… à tort ! Vous marquez ${p.move.score} points et il perd son tour.`, !!invalid.length);
+    } else {
+      accept(g);
+      this.setStatus(`L’ordinateur accepte : vous marquez ${p.move.score} points.`);
+    }
+    this.afterTurn();
+  }
+
+  /** Mode challenge : votre décision sur le coup de l'adversaire. */
+  private async respond(kind: 'accept' | 'challenge') {
+    if (!this.canRespond()) return;
+    if (this.mode === 'online') return this.sendAction({ type: kind });
+    const g = this.game;
+    const p = g.proposal!;
+    if (kind === 'accept') {
+      accept(g);
+      this.setStatus(`Coup accepté : l’ordinateur marque ${p.move.score} points.`);
+      return this.afterTurn();
+    }
+    this.busy = true;
+    const invalid = await this.engine.invalidWords(p.move.words.map((w) => w.word));
+    this.busy = false;
+    if (g !== this.game || g.proposal !== p) return;
+    challenge(g, invalid);
+    this.setStatus(invalid.length ? 'Challenge réussi ! L’ordinateur perd son tour.'
+      : `Challenge raté : le coup est valide, vous perdez votre tour.`, !invalid.length);
+    this.afterTurn();
   }
 
   /** Anime et sonorise ce qui vient de se passer (coup joué, échange, tour suivant), puis fait défiler les scores. */
@@ -283,10 +368,20 @@ export class App {
     const fresh = g.history.slice(this.seen);
     this.seen = g.history.length;
     const play = fresh.find((e) => e.kind === 'play');
-    let wait = 0;
+    // Mode challenge / hardcore : grand tampon animé avant le reste.
+    const judged = fresh.find((e) => e.challenged || (e.kind === 'invalid' && e.score < 0));
+    const stamp = !judged ? null
+      : judged.kind === 'invalid' && judged.score < 0 ? this.fx.stamp('REFUSÉ', `${judged.score} points`, 'bad')
+      : this.fx.stamp('CHALLENGE !', judged.kind === 'invalid' ? 'Réussi : mot refusé' : 'Raté : le mot est bon',
+        judged.kind === 'invalid' ? 'win' : 'fail');
+    const before = stamp ?? Promise.resolve();
+    let wait = stamp ? this.fx.stampMs : 0;
     if (play && g.lastWords?.length) {
-      wait = this.fx.duration(g.lastMove.length, g.lastWords.length);
-      this.fxDone = this.fx.countMove(this.el.board, g.lastMove, g.lastWords, play.score);
+      const words = g.lastWords, cells = g.lastMove;
+      wait += this.fx.duration(cells.length, words.length);
+      this.fxDone = before.then(() => this.fx.countMove(this.el.board, cells, words, play.score));
+    } else if (stamp) {
+      this.fxDone = stamp;
     } else if (fresh.some((e) => e.kind === 'exchange')) {
       this.sound.shuffle();
       this.fxDone = Promise.resolve();
@@ -311,7 +406,9 @@ export class App {
     if (!theirs || g.current !== this.me) return;
     const who = this.mode === 'solo' ? 'L’ordinateur' : g.players[this.opp].name;
     const what = theirs.kind === 'play' ? `${who} joue ${theirs.text} pour ${theirs.score} points.`
-      : theirs.kind === 'exchange' ? `${who} échange des lettres.` : `${who} passe son tour.`;
+      : theirs.kind === 'exchange' ? `${who} échange des lettres.`
+      : theirs.kind === 'invalid' ? `${who} : ${lcFirst(theirs.text)}.`
+      : theirs.kind === 'challenge' ? `${who} a contesté à tort et perd son tour.` : `${who} passe son tour.`;
     void this.notifier.show('À vous de jouer !', what, 'tour');
   }
 
@@ -338,7 +435,10 @@ export class App {
         this.fxDone.then(() => delay(500)),
       ]);
       if (g !== this.game) return; // nouvelle partie lancée entre-temps
-      if (d.kind === 'play') {
+      if (d.kind === 'play' && g.variant === 'challenge') {
+        propose(g, d.move);
+        this.setStatus(`L’ordinateur propose ${d.move.words.map((w) => w.word).join(', ')} pour ${d.move.score} points : acceptez ou contestez !`);
+      } else if (d.kind === 'play') {
         playMove(g, d.move);
         this.setStatus(`L'ordinateur joue ${d.move.words[0].word} pour ${d.move.score} points.`);
       } else if (d.kind === 'exchange' && g.bag.length >= RACK_SIZE) {
@@ -378,13 +478,18 @@ export class App {
     if (e.kind === 'play') return mine ? `Vous marquez ${e.score} points.` : `${name} joue ${e.text} pour ${e.score} points.`;
     if (e.kind === 'exchange') return mine ? 'Vous échangez des lettres.' : `${name} échange des lettres.`;
     if (e.kind === 'pass') return mine ? 'Vous passez votre tour.' : `${name} passe son tour.`;
+    if (e.kind === 'invalid') return e.challenged
+      ? (mine ? `Challenge réussi contre vous. ${e.text}.` : `Challenge réussi ! ${name} : ${lcFirst(e.text)}.`)
+      : (mine ? `${e.text}.` : `${name} : ${lcFirst(e.text)}.`);
+    if (e.kind === 'challenge') return mine ? 'Challenge raté : le mot était bon, vous perdez votre tour.'
+      : `${name} a contesté à tort et perd son tour.`;
     return '';
   }
 
   private sendAction(action: Action) {
-    if (!this.guest?.connected || !this.oppConnected) return this.setStatus('L’hôte n’est pas connecté pour l’instant.', true);
+    if (!this.link?.connected) return this.setStatus('Pas de connexion au serveur pour l’instant.', true);
     this.busy = true;
-    this.guest.send({ type: 'action', action });
+    this.link.send({ type: 'action', action });
     this.setStatus('Envoi du coup…');
     this.render();
   }
@@ -404,172 +509,129 @@ export class App {
     $(this.root, '#endDialog').classList.remove('open');
   }
 
-  private createGame() {
+  private createGame(variant: Variant | null) {
     this.closeLinks();
-    this.openHost(newCode(), newToken(), null);
-  }
-
-  /** Ouvre (ou rouvre, après rechargement) une partie en tant qu'hôte. */
-  private openHost(code: string, token: string, resume: GameState | null) {
-    this.hostToken = token;
-    setUrlCode(code);
-    if (resume) {
-      this.mode = 'host';
-      this.me = 0;
-      this.game = resume;
-      this.resetBoardUi();
-      this.setStatus(`Partie en ligne reprise. En attente de ${resume.players[1].name}…`);
-      this.syncRack();
-      this.render();
-    } else this.lobby('hosting', code, false);
-    this.host = new RelayLink<GuestMsg, HostMsg>(code, 'host', token, {
-      onOpen: () => { if (this.mode === 'solo') this.lobby('hosting', code, true); },
-      onPeer: (online) => {
-        this.oppConnected = online;
-        if (!online && this.mode === 'host' && !this.game.over) {
-          this.setStatus(`${this.game.players[1].name} est hors ligne. En attente de son retour…`, true);
-        }
-        this.render();
-      },
-      onMessage: (m) => void this.onGuestMsg(m),
-      onError: (text, fatal) => {
-        if (text === CODE_TAKEN && this.mode === 'solo') return this.createGame();
-        if (fatal && this.mode === 'solo') { this.closeLinks(); this.lobby('error', text); } else this.setStatus(text, true);
-      },
-    });
-  }
-
-  private async onGuestMsg(m: GuestMsg) {
-    if (!m || typeof m !== 'object') return;
-    if (m.type === 'hello') {
-      const name = cleanName(m.name) || 'Invité';
-      if (this.mode !== 'host') {
-        this.mode = 'host';
-        this.me = 0;
-        this.game = newGame('moyen', { names: [this.myName(), name] });
-        this.resetBoardUi();
-        this.closeLobby();
-        this.setStatus(`${name} a rejoint la partie.`);
-        void this.notifier.show(`${name} a rejoint la partie`,
-          this.game.current === this.me ? 'La partie commence : à vous de jouer !' : `La partie commence : ${name} joue en premier.`, 'tour');
-      } else {
-        this.game.players[1].name = name;
-        this.setStatus(`${name} est de retour.`);
-      }
-      return this.afterTurn();
-    }
-    if (this.mode !== 'host') return;
-    if (m.type === 'action') {
-      const action = parseAction(m.action);
-      if (!action) return this.host?.send({ type: 'error', message: 'Coup mal formé.' });
-      const err = await applyAction(this.game, 1, action, (w) => this.engine.invalidWords(w));
-      if (err) return this.host?.send({ type: 'error', message: err });
-      this.setStatus(this.describe(this.game.history[this.game.history.length - 1]));
-      this.afterTurn();
-    } else if (m.type === 'rematch') {
-      if (this.game.over) this.rematch();
-    } else if (m.type === 'bye') {
-      this.oppConnected = false;
-      this.setStatus(`${this.game.players[1].name} a quitté la partie.`, true);
-      void this.notifier.show(`${this.game.players[1].name} a quitté la partie`, '', 'depart');
-      this.render();
-    }
+    const code = newCode(), token = newToken();
+    lsSet(`${TOKEN_KEY}${code}`, token);
+    this.lobby('hosting', code, false);
+    this.connect(code, token, { variant });
   }
 
   private joinGame(code: string) {
     this.closeLinks();
-    let token = lsGet(`scrabble-fr-jeton-${code}`);
-    if (!token) { token = newToken(); lsSet(`scrabble-fr-jeton-${code}`, token); }
-    setUrlCode(code);
+    let token = lsGet(`${TOKEN_KEY}${code}`);
+    if (!token) { token = newToken(); lsSet(`${TOKEN_KEY}${code}`, token); }
     this.lobby('joining', code);
-    const link: GuestLink = new RelayLink<HostMsg, GuestMsg>(code, 'guest', token, {
-      onPeer: (online) => {
-        this.oppConnected = online;
-        // L'hôte (re)vient : on se présente, il répond avec l'état de la partie.
-        if (online) {
-          link.send({ type: 'hello', name: this.myName() });
-          if (this.mode === 'guest') { this.setStatus(`${this.game.players[this.opp].name} est de retour.`); this.render(); }
-          return;
-        }
-        this.busy = false;
-        if (this.mode === 'guest' && !this.game.over) {
-          this.setStatus(`${this.game.players[this.opp].name} est hors ligne. En attente de son retour…`, true);
-        }
-        this.render();
-      },
-      onMessage: (m) => this.onHostMsg(m),
-      onError: (text, fatal) => {
-        if (fatal && this.mode === 'solo') { this.closeLinks(); this.lobby('error', text); } else this.setStatus(text, true);
-      },
-    });
-    this.guest = link;
+    this.connect(code, token, null);
   }
 
-  private onHostMsg(m: HostMsg) {
-    if (!m || typeof m !== 'object') return;
-    if (m.type === 'state') {
-      const prev = this.mode === 'guest' ? this.game : null;
+  /** Se connecte à une partie du serveur ; `create` : on la crée, avec ces options. */
+  private connect(code: string, token: string, create: GameOptions | null) {
+    setUrlCode(code);
+    const link: GameLink = new GameLink(code, token, !!create, {
+      onOpen: () => link.send({ type: 'hello', name: this.myName(), ...(create ? { options: create } : {}) }),
+      onPeer: (online) => {
+        const was = this.oppConnected;
+        this.oppConnected = online;
+        if (this.mode !== 'online' || this.game.over || was === online) return this.render();
+        const name = this.game.players[this.opp].name;
+        if (online) this.setStatus(`${name} est de retour.`);
+        else this.setStatus(this.game.current === this.me
+          ? `${name} est hors ligne : jouez quand même, il verra votre coup à son retour.`
+          : `${name} est hors ligne.`);
+        this.render();
+      },
+      onMessage: (m) => this.onServerMsg(m),
+      onError: (text, fatal) => {
+        if (text === CODE_TAKEN && create && this.mode === 'solo') return this.createGame(create.variant);
+        if (fatal && this.mode === 'solo') { this.closeLinks(); this.lobby('error', text); }
+        else { this.busy = false; this.setStatus(text, true); this.render(); }
+      },
+    });
+    this.link = link;
+  }
+
+  private onServerMsg(m: ServerMsg) {
+    if (!m || typeof m !== 'object' || !this.link) return;
+    if (m.type === 'waiting') {
+      this.waiting = true;
+      if (this.mode === 'solo') this.lobby('hosting', this.link.code, true);
+    } else if (m.type === 'state') {
+      const prev = this.mode === 'online' ? this.game : null;
       const fresh = !prev || m.state.history.length < prev.history.length || (prev.over && !m.state.over);
-      this.mode = 'guest';
+      const opp = m.state.players[m.you === 0 ? 1 : 0].name;
+      if (this.waiting && m.state.history.length === 0) {
+        void this.notifier.show(`${opp} a rejoint la partie`,
+          m.state.current === m.you ? 'La partie commence : à vous de jouer !' : `La partie commence : ${opp} joue en premier.`, 'tour');
+      }
+      this.waiting = false;
+      this.mode = 'online';
       this.me = m.you;
       this.game = m.state;
       if (fresh) { this.resetBoardUi(); this.closeLobby(); }
       this.busy = false;
       const last = this.game.history[this.game.history.length - 1];
-      if (fresh) this.setStatus(`Partie contre ${this.game.players[this.opp].name}. Bonne chance !`);
-      else if (last && prev && this.game.history.length > prev.history.length) this.setStatus(this.describe(last));
+      if (fresh) this.setStatus(this.game.history.length
+        ? `Partie contre ${opp} reprise.`
+        : `Partie contre ${opp}${this.game.variant ? ` (mode ${variantLabel(this.game.variant)})` : ''}. Bonne chance !`);
+      else if (last && prev && this.game.history.length > prev.history.length) this.setStatus(this.describe(last), last.kind === 'invalid' && last.player === this.me);
+      // Mode challenge : l'adversaire vient de poser un coup, à nous de trancher.
+      const prop = this.game.proposal;
+      if (prop && prop.player !== this.me && !prev?.proposal) {
+        const what = `${opp} propose ${prop.move.words.map((w) => w.word).join(', ')} pour ${prop.move.score} points`;
+        this.setStatus(`${what} : acceptez ou contestez !`);
+        this.sound.turn();
+        void this.notifier.show('Accepter ou contester ?', `${what}.`, 'tour');
+      } else if (prop && prop.player === this.me && !prev?.proposal) {
+        this.setStatus(`Coup posé : ${opp} va l’accepter ou le contester…`);
+      }
       this.syncRack();
       this.render();
       this.celebrate();
       if (this.game.over && !prev?.over) void this.fxDone.then(() => this.showEnd());
     } else if (m.type === 'error') {
-      if (this.mode !== 'guest') { this.closeLinks(); return this.lobby('error', m.message); }
+      if (this.mode !== 'online') { this.closeLinks(); return this.lobby('error', m.message); }
       this.busy = false;
       this.sound.invalid();
       this.setStatus(m.message, true);
       this.render();
-    } else if (m.type === 'bye') {
+    } else if (m.type === 'left') {
+      if (this.mode !== 'online') return;
       this.oppConnected = false;
-      this.setStatus(`${this.game.players[this.opp].name} a fermé la partie.`, true);
-      void this.notifier.show(`${this.game.players[this.opp].name} a fermé la partie`, '', 'depart');
+      const name = this.game.players[this.opp].name;
+      this.setStatus(`${name} a quitté la partie.`, true);
+      void this.notifier.show(`${name} a quitté la partie`, '', 'depart');
       this.render();
     }
   }
 
   private rematch() {
-    if (this.mode === 'guest') {
-      this.guest?.send({ type: 'rematch' });
-      $(this.root, '#endDialog').classList.remove('open');
-      return this.setStatus('Revanche demandée…');
-    }
-    const [a, b] = this.game.players;
-    this.game = newGame('moyen', { names: [a.name, b.name] });
-    this.resetBoardUi();
-    this.setStatus('Nouvelle manche !');
-    this.afterTurn();
+    this.link?.send({ type: 'rematch' });
+    $(this.root, '#endDialog').classList.remove('open');
+    this.setStatus('Revanche demandée…');
   }
 
+  /** Quitte la partie en ligne pour de bon (le serveur prévient l'adversaire). */
   private closeLinks() {
-    this.host?.close({ type: 'bye' });
-    this.guest?.close({ type: 'bye' });
-    this.host = this.guest = null;
+    if (this.link) lsDel(`${TOKEN_KEY}${this.link.code}`);
+    this.link?.close({ type: 'bye' });
+    this.link = null;
     this.oppConnected = false;
+    this.waiting = false;
   }
 
   private quitOnline() {
-    if (!this.game.over && !confirm('Quitter la partie en ligne ?')) return;
+    if (!this.game.over && !confirm('Quitter la partie en ligne ? Vous ne pourrez plus la reprendre.')) return;
     this.closeLinks();
-    if (this.mode === 'host') lsDel(HOST_SAVE);
     this.mode = 'solo';
     this.me = 0;
     setUrlCode(null);
     const saved = loadGame();
-    this.game = saved && !saved.over ? saved : newGame(this.readLevel());
+    this.game = saved && !saved.over ? saved : newGame(this.readLevel(), null, { variant: this.variantPref() });
     this.resetBoardUi();
     this.setStatus('Retour à la partie contre l’ordinateur.');
     this.afterTurn();
   }
-
   private lobby(view: 'menu' | 'hosting' | 'joining' | 'error', arg = '', ready = false) {
     const name = esc(cleanName(lsGet('scrabble-fr-nom')));
     const body = this.el.onlineBody;
@@ -578,12 +640,14 @@ export class App {
         <h2>Jouer en ligne</h2>
         <p class="muted">Affrontez quelqu’un à distance : créez une partie et envoyez-lui le lien.</p>
         <label class="field">Votre nom<input id="olName" maxlength="16" autocomplete="nickname" value="${name}" placeholder="Votre nom" /></label>
-        ${arg ? '' : '<button class="btn primary wide" data-ol="create">Créer une partie</button><div class="sep"><span>ou</span></div>'}
+        ${arg ? '' : `<fieldset class="variants"><legend>Mode de jeu</legend>${this.variantRadios('olVariant', this.variantPref())}</fieldset>
+        <button class="btn primary wide" data-ol="create">Créer une partie</button><div class="sep"><span>ou</span></div>`}
         <form class="check" data-ol="join-form">
           <input id="olCode" maxlength="7" placeholder="Code de la partie" autocomplete="off" autocapitalize="characters" value="${esc(arg)}" />
           <button class="btn ${arg ? 'primary' : ''}">Rejoindre</button>
         </form>
-        <p class="note">Le dictionnaire de la personne qui crée la partie fait foi.</p>
+        <p class="note">La partie est gardée sur le serveur : chacun peut fermer la page et revenir plus tard avec le lien.
+          Le dictionnaire du serveur (liste libre) fait foi.</p>
         <div class="row"><button type="button" class="btn" data-ol="close">Fermer</button></div>`;
     } else if (view === 'hosting') {
       const link = `${location.origin}${location.pathname}?partie=${arg}`;
@@ -612,6 +676,11 @@ export class App {
     body.querySelector<HTMLInputElement>(view === 'menu' && !name ? '#olName' : '#olCode')?.focus();
   }
 
+  private variantRadios(name: string, current: Variant | null) {
+    return VARIANTS.map((v) => `<label class="variant v-${v.id}"><input type="radio" name="${name}" value="${v.id}"
+      ${(current ?? 'normal') === v.id ? 'checked' : ''} /><span><b>${v.label}</b><small>${v.help}</small></span></label>`).join('');
+  }
+
   private closeLobby() { $(this.root, '#onlineDialog').classList.remove('open'); }
 
   private bindLobby() {
@@ -631,7 +700,12 @@ export class App {
     };
     body.addEventListener('click', (e) => {
       const a = (e.target as HTMLElement).closest<HTMLElement>('[data-ol]')?.dataset.ol;
-      if (a === 'create') { if (saveName()) this.createGame(); }
+      if (a === 'create') {
+        if (!saveName()) return;
+        const v = variantOf(body.querySelector<HTMLInputElement>('input[name="olVariant"]:checked')?.value);
+        lsSet(VARIANT_KEY, v ?? 'normal');
+        this.createGame(v);
+      }
       else if (a === 'close' || a === 'cancel') cancel();
       else if (a === 'menu') this.lobby('menu');
       else if (a === 'copy') {
@@ -742,6 +816,7 @@ export class App {
       else if (a === 'exchange') this.toggleExchange();
       else if (a === 'confirm-exchange') this.confirmExchange();
       else if (a === 'pass') this.doPass();
+      else if (a === 'accept' || a === 'challenge') void this.respond(a);
     });
     $(this.root, '#newGame').addEventListener('click', () => this.startNewGame());
     $(this.root, '#endNew').addEventListener('click', () => (this.mode === 'solo' ? this.startNewGame() : this.rematch()));
@@ -774,6 +849,20 @@ export class App {
       this.game.level = l;
       saveGame(this.game);
       this.setStatus(`Niveau de l'ordinateur : ${l}.`);
+    });
+    this.el.variant.addEventListener('change', () => {
+      const v = variantOf((this.el.variant as HTMLSelectElement).value);
+      lsSet(VARIANT_KEY, v ?? 'normal');
+      if (this.mode !== 'solo') return;
+      const info = VARIANTS.find((x) => x.id === (v ?? 'normal'))!;
+      // Partie pas encore commencée : le mode s'applique tout de suite.
+      if (!this.game.history.length && !this.game.proposal && !this.busy) {
+        if (v) this.game.variant = v; else delete this.game.variant;
+        saveGame(this.game);
+        this.render();
+        return this.setStatus(`Mode ${info.label} : ${info.help}`);
+      }
+      this.setStatus(`Mode ${info.label} pour la prochaine partie : ${info.help}`);
     });
 
     this.el.dict.addEventListener('change', (e) => {
@@ -1173,6 +1262,7 @@ export class App {
     if (!g) return;
     const last = new Set(g.lastMove.map(([r, c]) => r * SIZE + c));
     const pend = new Map(this.pending.map((p) => [p.r * SIZE + p.c, p]));
+    const prop = new Map((g.proposal?.move.placements ?? []).map((p) => [p.r * SIZE + p.c, p]));
     const cells = this.el.board.children;
     for (let r = 0; r < SIZE; r++) {
       for (let c = 0; c < SIZE; c++) {
@@ -1182,7 +1272,8 @@ export class App {
         cell.querySelector('.tile')?.remove();
         if (t) cell.insertAdjacentHTML('beforeend', this.tileHtml(t.letter, t.blank, last.has(r * SIZE + c) ? 'last' : ''));
         else if (p) cell.insertAdjacentHTML('beforeend', this.tileHtml(p.letter === BLANK ? p.assigned : p.letter, p.letter === BLANK, 'pending', p.id));
-        cell.classList.toggle('target', this.selected !== null && !t && !p);
+        else if (prop.has(r * SIZE + c)) { const q = prop.get(r * SIZE + c)!; cell.insertAdjacentHTML('beforeend', this.tileHtml(q.letter, q.blank, 'proposed')); }
+        cell.classList.toggle('target', this.selected !== null && !t && !p && !prop.has(r * SIZE + c));
       }
     }
 
@@ -1202,17 +1293,22 @@ export class App {
     this.el.scores.innerHTML = `
       <div class="player ${turn(this.me)}"><span class="name">${solo ? 'Vous' : `${esc(h.name)} <i class="off">(vous)</i>`}</span><span class="pts" data-p="${this.me}">${this.shownScore(this.me)}</span></div>
       <div class="player ${turn(this.opp)}"><span class="name">${solo ? 'Ordinateur' : esc(a.name)}${oppTag}</span><span class="pts" data-p="${this.opp}">${this.shownScore(this.opp)}</span></div>`;
-    this.el.bag.textContent = `${g.bag.length} jeton${g.bag.length > 1 ? 's' : ''} dans le sac`;
+    this.el.bag.innerHTML = `${g.bag.length} jeton${g.bag.length > 1 ? 's' : ''} dans le sac` +
+      (g.variant ? ` · <span class="variant-tag v-${g.variant}">${variantLabel(g.variant)}</span>` : '');
 
     this.el.history.innerHTML = g.history.length
       ? [...g.history].reverse().map((e) => `<li class="${e.player === this.me ? 'me' : 'ai'} k-${e.kind}">
           <span class="who">${e.kind === 'end' ? '' : e.player === this.me ? 'Vous' : solo ? 'Ordi' : esc(g.players[e.player].name)}</span>
           <span class="what">${esc(e.text)}</span>
-          <span class="sc">${e.kind === 'play' ? `+${e.score}` : ''}</span></li>`).join('')
+          <span class="sc">${e.kind === 'play' ? `+${e.score}` : e.score < 0 ? `−${-e.score}` : ''}</span></li>`).join('')
       : '<li class="empty">Aucun coup pour l’instant.</li>';
 
     const can = this.canAct();
-    this.el.actions.innerHTML = this.exchangeMode
+    this.el.actions.innerHTML = g.proposal && g.proposal.player !== this.me && !g.over
+      ? `<button class="btn" data-action="accept" ${this.canRespond() ? '' : 'disabled'}>Accepter</button>
+         <button class="btn challenge-btn" data-action="challenge" ${this.canRespond() ? '' : 'disabled'} aria-label="Challenge !">${
+           [...'CHALLENGE!'].map((ch, i) => `<span style="--i:${i}">${ch}</span>`).join('')}</button>`
+      : this.exchangeMode
       ? `<button class="btn primary" data-action="confirm-exchange">Échanger ${this.exchangeSel.size || ''}</button>
          <button class="btn" data-action="exchange">Annuler</button>`
       : `<button class="btn primary" data-action="play" ${can && this.pending.length ? '' : 'disabled'}>Jouer</button>
@@ -1222,11 +1318,12 @@ export class App {
          <button class="btn" data-action="pass" ${can ? '' : 'disabled'}>Passer</button>`;
 
     this.el.levelWrap.hidden = !solo;
+    $(this.root, '#variantWrap').hidden = !solo;
     this.el.onlineBtn.hidden = !solo;
     this.el.newGame.textContent = solo ? 'Nouvelle partie' : 'Quitter';
     this.el.onlineInfo.hidden = solo;
     if (!solo) {
-      const code = (this.host ?? this.guest)?.code ?? '';
+      const code = this.link?.code ?? '';
       this.el.onlineInfo.innerHTML = `<span class="dot ${this.oppConnected ? 'on' : ''}"></span>En ligne · <b>${esc(code)}</b>`;
       this.el.onlineInfo.title = this.oppConnected ? 'Adversaire connecté' : 'Adversaire déconnecté';
     }
@@ -1283,6 +1380,15 @@ export class App {
     const setPlayable = (v: boolean) => { if (playBtn) playBtn.disabled = !v; };
 
     if (!this.game || this.game.over) { out.innerHTML = ''; return setPlayable(false); }
+    const prop = this.game.proposal;
+    if (prop) {
+      const who = this.mode === 'solo' ? 'L’ordinateur' : esc(this.game.players[this.opp].name);
+      const words = prop.move.words.map((w) => w.word).join(' · ');
+      out.innerHTML = prop.player === this.me
+        ? `<span class="words">${words}</span><span class="muted">${who} accepte ou conteste…</span>`
+        : `<span class="words">${words}</span><span class="score">${prop.move.score} pts</span><span class="muted">Accepter ou contester ?</span>`;
+      return setPlayable(false);
+    }
     if (this.game.current !== this.me) {
       const who = this.mode === 'solo' ? 'l’ordinateur' : esc(this.game.players[this.opp].name);
       out.innerHTML = `<span class="muted">Au tour de ${who}…</span>`;
@@ -1297,14 +1403,16 @@ export class App {
     if (!res.ok) { out.innerHTML = `<span class="bad">${esc(res.error)}</span>`; return setPlayable(false); }
     const words = res.words.map((w) => w.word);
     out.innerHTML = `<span class="words">${words.join(' · ')}</span><span class="score">${res.score} pts</span>`;
+    // Modes challenge et hardcore : on ne sait pas si le mot est valide avant de le jouer.
+    if (this.game.variant) return setPlayable(this.canAct());
     setPlayable(false);
     const invalid = await this.engine.invalidWords(words);
     if (token !== this.previewToken) return;
     if (invalid.length) {
       out.innerHTML = `<span class="words">${words.map((w) => (invalid.includes(w) ? `<s class="bad">${w}</s>` : w)).join(' · ')}</span>` +
-        `<span class="bad">absent du dictionnaire${this.mode === 'guest' ? ' (l’hôte tranchera)' : ''}</span>`;
-      // En ligne, seul le dictionnaire de l'hôte fait foi : l'invité peut tenter le coup.
-      setPlayable(this.mode === 'guest' && this.canAct());
+        `<span class="bad">absent du dictionnaire${this.mode === 'online' ? ' (le serveur tranchera)' : ''}</span>`;
+      // En ligne, seul le dictionnaire du serveur fait foi : on peut tenter le coup.
+      setPlayable(this.mode === 'online' && this.canAct());
     } else setPlayable(this.canAct());
   }
 
@@ -1337,6 +1445,9 @@ const TEMPLATE = `
         <option value="moyen">Moyen</option>
         <option value="difficile">Difficile</option>
       </select>
+    </label>
+    <label class="level" id="variantWrap">Mode
+      <select id="variant">${VARIANTS.map((v) => `<option value="${v.id}" title="${v.help}">${v.label}</option>`).join('')}</select>
     </label>
     <button class="btn primary" id="onlineBtn">Jouer en ligne</button>
     <button class="btn" id="newGame">Nouvelle partie</button>
