@@ -14,6 +14,11 @@ npm run server:build
 ssh "$HOST" "mkdir -p ~/$DEST"
 # dist/server.mjs est copié sous le nom server.mjs : la commande du site (node server.mjs) ne change pas.
 scp server/dist/server.mjs "$HOST:~/$DEST/server.mjs"
-scp server/package.json server/package-lock.json public/dict/fr-*.txt "$HOST:~/$DEST/"
+# Listes de mots compressées (le serveur lit les .txt.gz) : le quota disque du compte est serré.
+TMP=$(mktemp -d)
+trap 'rm -rf "$TMP"' EXIT
+for f in public/dict/fr-*.txt; do gzip -9c "$f" > "$TMP/$(basename "$f").gz"; done
+ssh "$HOST" "rm -f ~/$DEST/fr-*.txt"
+scp server/package.json server/package-lock.json "$TMP"/fr-*.txt.gz "$HOST:~/$DEST/"
 ssh "$HOST" "$NODE_PATH_CMD && cd ~/$DEST && node -v && npm ci --omit=dev --no-audit --no-fund"
 echo "Serveur envoyé dans ~/$DEST sur $HOST. Redémarrez le site depuis l'administration alwaysdata."

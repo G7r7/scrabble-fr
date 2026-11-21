@@ -8,6 +8,7 @@
 import { createServer } from 'node:http';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
+import { gunzipSync } from 'node:zlib';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
@@ -30,11 +31,14 @@ function loadDict(id: DictId): Promise<Set<string>> {
   let p = dicts.get(id);
   if (!p) {
     p = (async () => {
+      // Sur le serveur, les listes sont compressées (fr-….txt.gz) pour tenir dans le quota disque.
       const file = dictInfo(id).file;
-      const path = DICT_DIRS.map((d) => join(d, file)).find((f) => existsSync(f));
+      const path = DICT_DIRS.flatMap((d) => [join(d, file), join(d, `${file}.gz`)]).find((f) => existsSync(f));
       if (!path) throw new Error(`Liste introuvable : ${file}`);
+      const raw = await readFile(path);
+      const text = (path.endsWith('.gz') ? gunzipSync(raw) : raw).toString('utf8');
       const set = new Set<string>();
-      for (const line of (await readFile(path, 'utf8')).split(/\r?\n/)) {
+      for (const line of text.split(/\r?\n/)) {
         const w = normalizeWord(line);
         if (w) set.add(w);
       }
