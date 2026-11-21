@@ -58,6 +58,21 @@ describe('serveur de jeu', () => {
     expect(c.room.dict).toBeNull();
   });
 
+  test('résumé « Mes parties en cours » : seulement pour le détenteur du jeton', async () => {
+    const { games } = setup();
+    const a = seatOf(games.join('ABC234', A, true));
+    await games.message(a.room, 0, { type: 'hello', name: 'Alice' });
+    expect(games.summary('ABC234', A)).toEqual({ code: 'ABC234', found: true, waiting: true });
+    const b = seatOf(games.join('ABC234', B, false));
+    await games.message(b.room, 1, { type: 'hello', name: 'Bob' });
+    const cur = a.room.state!.current;
+    const sa = games.summary('ABC234', A);
+    expect(sa).toMatchObject({ found: true, opp: 'Bob', scores: [0, 0], myTurn: cur === 0, over: false });
+    expect(games.summary('ABC234', B)).toMatchObject({ opp: 'Alice', myTurn: cur === 1 });
+    expect(games.summary('ABC234', C)).toEqual({ code: 'ABC234', found: false });
+    expect(games.summary('NOPE99', A)).toEqual({ code: 'NOPE99', found: false });
+  });
+
   test('refus : code pris, partie complète, introuvable ; reconnexion acceptée', () => {
     const { games } = setup();
     seatOf(games.join('ABC234', A, true));

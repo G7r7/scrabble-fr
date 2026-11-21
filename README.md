@@ -9,8 +9,12 @@ Scrabble en français, à jouer dans le navigateur contre l'ordinateur.
 - Glisser-déposer à la souris ou au doigt, ou bien toucher une lettre puis une case. Un aperçu affiche les mots formés et le score avant de jouer.
 - La partie en cours est sauvegardée dans le navigateur.
 - **Jeu en ligne** à deux : « Jouer en ligne », puis envoyez le lien (ou le code à 6 caractères) à votre adversaire.
-  La partie est gardée sur le serveur : chacun peut fermer la page et revenir plus tard avec le lien, et jouer
+  La partie est gardée sur le serveur : chacun peut fermer l'appli et revenir plus tard, et jouer
   même quand l'adversaire est hors ligne.
+  - **Mes parties en cours** : l'appli retient vos parties en ligne ; un bandeau les rappelle à l'ouverture
+    (« à vous ! ») et « Jouer en ligne » les liste, avec l'état à jour donné par le serveur. On reprend d'un toucher.
+  - **Continuer sur un autre appareil** (Options, pendant une partie en ligne) : un lien et un QR code qui
+    contiennent votre place ; l'appareil précédent est déconnecté. « Quitter » abandonne la partie pour de bon.
 - **Trois modes de jeu** (Options, ou à la création d'une partie en ligne) :
   - **Normal** : les mots sont vérifiés avant d'être joués ;
   - **Challenge** : aucune vérification avant de jouer. L'adversaire accepte le coup ou le conteste

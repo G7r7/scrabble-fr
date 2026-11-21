@@ -34,3 +34,18 @@ export const CLOSE = {
 
 export const cleanName = (s: unknown) =>
   typeof s === 'string' ? s.replace(/[\u0000-\u001f\u007f]/g, '').replace(/\s+/g, ' ').trim().slice(0, 16) : '';
+
+/** Résumé d'une partie pour un joueur (liste « Mes parties en cours »), renvoyé par POST sur le serveur. */
+export interface GameSummary {
+  code: string;
+  /** Partie inconnue du serveur (expirée, quittée) ou jeton qui ne correspond à aucune place. */
+  found: boolean;
+  /** Personne n'a encore rejoint la partie. */
+  waiting?: boolean;
+  opp?: string;
+  /** [mes points, ses points] */
+  scores?: [number, number];
+  /** À moi de jouer (ou de juger le coup proposé). */
+  myTurn?: boolean;
+  over?: boolean;
+}

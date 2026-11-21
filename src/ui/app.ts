@@ -9,8 +9,9 @@ import type { Action } from '../game/remote';
 import { DICTS, dictInfo, dictOf, type DictId, type GameDict } from '../game/dicts';
 import { THEMES, THEME_MULT, applyTheme, themeInfo, themeOf, type ThemeId } from '../game/themes';
 import type { Placement } from '../game/types';
-import { CODE_TAKEN, GameLink, isCode, newCode, newToken, normalizeCode } from '../net/online';
-import { cleanName, type GameOptions, type ServerMsg } from '../net/protocol';
+import { CODE_TAKEN, GameLink, fetchSummaries, isCode, isToken, newCode, newToken, normalizeCode } from '../net/online';
+import { cleanName, type GameOptions, type GameSummary, type ServerMsg } from '../net/protocol';
+import qrcode from 'qrcode-generator';
 import type { Level } from '../ai/player';
 import { Engine } from '../engine';
 import { Fx, Sound } from './fx';
@@ -35,6 +36,23 @@ const TOKEN_KEY = 'scrabble-fr-jeton-';
 const VARIANT_KEY = 'scrabble-fr-variante';
 const THEME_KEY = 'scrabble-fr-theme';
 const DICT_KEY = 'scrabble-fr-liste';
+/** Parties en ligne en cours sur cet appareil (« Mes parties en cours »). */
+const GAMES_KEY = 'scrabble-fr-parties';
+interface MyGame { code: string; opp?: string; scores?: [number, number]; myTurn?: boolean; waiting?: boolean; at: number }
+function loadMyGames(): MyGame[] {
+  try {
+    const l = JSON.parse(lsGet(GAMES_KEY) ?? '[]');
+    return Array.isArray(l) ? l.filter((g) => g && isCode(g.code) && lsGet(`${TOKEN_KEY}${g.code}`)) : [];
+  } catch { return []; }
+}
+const saveMyGames = (l: MyGame[]) => lsSet(GAMES_KEY, JSON.stringify(l.slice(0, 30)));
+function rememberGame(code: string, patch: Partial<MyGame>) {
+  const l = loadMyGames();
+  const g = l.find((x) => x.code === code);
+  if (g) Object.assign(g, patch, { at: Date.now() }); else l.unshift({ code, ...patch, at: Date.now() });
+  saveMyGames(l);
+}
+const forgetGame = (code: string) => saveMyGames(loadMyGames().filter((g) => g.code !== code));
 const variantOf = (v: unknown): Variant | null => (v === 'challenge' || v === 'hardcore' ? v : null);
 /** Première lettre en minuscule (pour enchaîner « Nom : mot refusé… »). */
 const lcFirst = (t: string) => t.charAt(0).toLowerCase() + t.slice(1);
@@ -75,6 +93,8 @@ export class App {
   private link: GameLink | null = null;
   /** Partie en ligne créée, personne ne l'a encore rejointe. */
   private waiting = false;
+  /** Code de la partie en ligne affichée (pour savoir si un état reçu est celui d'une autre partie). */
+  private gameCode: string | null = null;
   private oppConnected = false;
 
   // Effets : sons, animation du dernier coup, compteurs de points.
@@ -127,7 +147,20 @@ export class App {
     this.soloNext();
 
     lsDel('scrabble-fr-hote'); // ancienne sauvegarde de l'hôte (avant le serveur de jeu)
-    const code = normalizeCode(new URLSearchParams(location.search).get('partie') ?? '');
+    const params = new URLSearchParams(location.search);
+    const code = normalizeCode(params.get('partie') ?? '');
+    // Lien « Continuer sur un autre appareil » : il apporte le jeton secret de la place du joueur.
+    const jeton = params.get('jeton');
+    if (params.has('jeton')) {
+      const url = new URL(location.href);
+      url.searchParams.delete('jeton');
+      history.replaceState(null, '', url);
+    }
+    if (isCode(code) && isToken(jeton)) {
+      lsSet(`${TOKEN_KEY}${code}`, jeton);
+      rememberGame(code, {});
+    }
+    if (!isCode(code)) void this.refreshMyGames();
     if (isCode(code)) {
       // Déjà venu sur cette partie (rechargement, ou retour plus tard) : on se reconnecte directement.
       if (lsGet(`${TOKEN_KEY}${code}`) && lsGet('scrabble-fr-nom')) this.joinGame(code);
@@ -595,15 +628,19 @@ export class App {
   }
 
   private createGame(options: GameOptions) {
-    this.closeLinks();
+    this.disconnect();
     const code = newCode(), token = newToken();
     lsSet(`${TOKEN_KEY}${code}`, token);
+    rememberGame(code, { waiting: true });
     this.lobby('hosting', code, false);
     this.connect(code, token, options);
+    this.waiting = true; // « Annuler » supprimera la partie tant que personne ne l'a rejointe
   }
 
   private joinGame(code: string) {
-    this.closeLinks();
+    // Passer d'une partie en ligne à une autre : on se déconnecte de la première sans la quitter.
+    if (this.mode === 'online') this.toSolo();
+    this.disconnect();
     let token = lsGet(`${TOKEN_KEY}${code}`);
     if (!token) { token = newToken(); lsSet(`${TOKEN_KEY}${code}`, token); }
     this.lobby('joining', code);
@@ -627,9 +664,11 @@ export class App {
         this.render();
       },
       onMessage: (m) => this.onServerMsg(m),
-      onError: (text, fatal) => {
+      onError: (text, fatal, closeCode) => {
         if (text === CODE_TAKEN && create && this.mode === 'solo') return this.createGame(create);
-        if (fatal && this.mode === 'solo') { this.closeLinks(); this.lobby('error', text); }
+        // Partie disparue (expirée, quittée) ou place prise : on l'oublie.
+        if (closeCode === 4004 || closeCode === 4003) { forgetGame(code); lsDel(`${TOKEN_KEY}${code}`); }
+        if (fatal && this.mode === 'solo') { this.disconnect(); this.lobby('error', text); }
         else { this.busy = false; this.setStatus(text, true); this.render(); }
       },
     });
@@ -642,9 +681,17 @@ export class App {
       this.waiting = true;
       if (this.mode === 'solo') this.lobby('hosting', this.link.code, true);
     } else if (m.type === 'state') {
-      const prev = this.mode === 'online' ? this.game : null;
+      const sameGame = this.mode === 'online' && this.gameCode === this.link.code;
+      const prev = sameGame ? this.game : null;
       const fresh = !prev || m.state.history.length < prev.history.length || (prev.over && !m.state.over);
       const opp = m.state.players[m.you === 0 ? 1 : 0].name;
+      this.gameCode = this.link.code;
+      const st = m.state, mine = st.players[m.you], theirs = st.players[m.you === 0 ? 1 : 0];
+      if (st.over) forgetGame(this.link.code);
+      else rememberGame(this.link.code, {
+        opp, scores: [mine.score, theirs.score], waiting: false,
+        myTurn: st.proposal ? st.proposal.player !== m.you : st.current === m.you,
+      });
       if (this.waiting && m.state.history.length === 0) {
         void this.notifier.show(`${opp} a rejoint la partie`,
           m.state.current === m.you ? 'La partie commence : à vous de jouer !' : `La partie commence : ${opp} joue en premier.`, 'tour');
@@ -675,7 +722,7 @@ export class App {
       this.celebrate();
       if (this.game.over && !prev?.over) void this.fxDone.then(() => this.showEnd());
     } else if (m.type === 'error') {
-      if (this.mode !== 'online') { this.closeLinks(); return this.lobby('error', m.message); }
+      if (this.mode !== 'online') { this.disconnect(); return this.lobby('error', m.message); }
       this.busy = false;
       this.sound.invalid();
       this.setStatus(m.message, true);
@@ -696,28 +743,109 @@ export class App {
     this.setStatus('Revanche demandée…');
   }
 
-  /** Quitte la partie en ligne pour de bon (le serveur prévient l'adversaire). */
-  private closeLinks() {
-    if (this.link) lsDel(`${TOKEN_KEY}${this.link.code}`);
+  /** Se déconnecte de la partie en ligne sans la quitter : on pourra la reprendre (lien, code, « Mes parties »). */
+  private disconnect() {
+    this.link?.close();
+    this.link = null;
+    this.oppConnected = false;
+    this.waiting = false;
+  }
+
+  /** Quitte la partie en ligne pour de bon : le serveur prévient l'adversaire, l'appareil oublie la partie. */
+  private leaveGame() {
+    if (this.link) { lsDel(`${TOKEN_KEY}${this.link.code}`); forgetGame(this.link.code); }
     this.link?.close({ type: 'bye' });
     this.link = null;
     this.oppConnected = false;
     this.waiting = false;
   }
 
-  private quitOnline() {
-    if (!this.game.over && !confirm('Quitter la partie en ligne ? Vous ne pourrez plus la reprendre.')) return;
-    this.closeLinks();
+  /** Revient à la partie contre l'ordinateur. */
+  private toSolo(msg = 'Retour à la partie contre l’ordinateur.') {
+    this.disconnect();
     this.mode = 'solo';
     this.me = 0;
+    this.gameCode = null;
     setUrlCode(null);
     const saved = loadGame();
     this.game = saved && !saved.over ? saved : newGame(this.readLevel(), null, this.prefs());
     this.resetBoardUi();
-    this.setStatus('Retour à la partie contre l’ordinateur.');
+    this.setStatus(msg);
     this.afterTurn();
+    void this.refreshMyGames();
   }
-  private lobby(view: 'menu' | 'hosting' | 'joining' | 'error', arg = '', ready = false) {
+
+  private quitOnline() {
+    if (!this.game.over && !confirm('Quitter définitivement la partie en ligne ? Votre adversaire sera prévenu.\n\n(Pour une simple pause, fermez l’appli : la partie vous attendra.)')) return;
+    this.leaveGame();
+    this.toSolo();
+  }
+
+  // ---------- Mes parties en cours ----------
+
+  /** Met à jour la liste auprès du serveur (à qui le tour, scores) et oublie les parties disparues ou finies. */
+  private async refreshMyGames(): Promise<MyGame[]> {
+    const mine = loadMyGames();
+    const sums = await fetchSummaries(mine.map((g) => ({ code: g.code, token: lsGet(`${TOKEN_KEY}${g.code}`)! })));
+    if (sums) {
+      const by = new Map(sums.map((x: GameSummary) => [x.code, x]));
+      for (const g of mine) {
+        const x = by.get(g.code);
+        if (!x) continue;
+        if (!x.found || x.over) { forgetGame(g.code); if (!x.found) lsDel(`${TOKEN_KEY}${g.code}`); continue; }
+        rememberGame(g.code, x.waiting ? { waiting: true } : { opp: x.opp, scores: x.scores, myTurn: x.myTurn, waiting: false });
+      }
+    }
+    this.renderGamesBar();
+    this.renderGamesList();
+    return loadMyGames();
+  }
+
+  /** Parties en ligne autres que celle affichée, celles où c'est à moi d'abord. */
+  private otherGames() {
+    return loadMyGames().filter((g) => g.code !== this.gameCode)
+      .sort((a, b) => Number(!!b.myTurn) - Number(!!a.myTurn) || b.at - a.at);
+  }
+
+  private gameLine(g: MyGame, short = false) {
+    if (g.waiting) return `<b>${esc(g.code)}</b> · ${short ? 'en attente' : 'en attente d’un adversaire'}`;
+    const sc = g.scores ? ` · ${g.scores[0]} – ${g.scores[1]}` : '';
+    const turn = g.myTurn ? `<span class="your-turn">${short ? 'à vous !' : 'à vous de jouer'}</span>`
+      : short ? 'son tour' : `au tour de ${esc(g.opp ?? 'l’adversaire')}`;
+    return `${short ? '' : 'contre '}<b>${esc(g.opp ?? '?')}</b>${sc} · ${turn}`;
+  }
+
+  /** Bandeau sous les scores (contre l'ordinateur) : rappelle les parties en ligne en cours. */
+  private renderGamesBar() {
+    const bar = this.root.querySelector<HTMLElement>('#gamesBar');
+    if (!bar) return;
+    const list = this.mode === 'solo' ? this.otherGames() : [];
+    bar.hidden = !list.length;
+    if (!list.length) return;
+    const turns = list.filter((g) => g.myTurn).length;
+    bar.innerHTML = list.length === 1
+      ? `<span>En ligne : ${this.gameLine(list[0], true)}</span><button class="btn small primary" data-resume="${list[0].code}">Reprendre</button>`
+      : `<span>${list.length} parties en ligne${turns ? ` · <span class="your-turn">${turns} à vous de jouer</span>` : ''}</span><button class="btn small primary" data-games>Voir</button>`;
+  }
+
+  /** Liste « Mes parties en cours » dans la fenêtre Jouer en ligne. */
+  private renderGamesList() {
+    const box = this.el.onlineBody.querySelector<HTMLElement>('#olGames');
+    if (!box) return;
+    const list = this.otherGames();
+    box.hidden = !list.length;
+    box.innerHTML = list.length ? `<h3>Mes parties en cours</h3>` + list.map((g) =>
+      `<button type="button" class="game-row ${g.myTurn ? 'turn' : ''}" data-ol="resume" data-code="${g.code}"><span>${this.gameLine(g)}</span><span aria-hidden="true">›</span></button>`).join('') : '';
+  }
+
+  // ---------- Continuer sur un autre appareil ----------
+
+  private transferUrl() {
+    const code = this.link?.code ?? '';
+    const token = lsGet(`${TOKEN_KEY}${code}`) ?? '';
+    return `${location.origin}${location.pathname}?partie=${code}&jeton=${token}`;
+  }
+  private lobby(view: 'menu' | 'hosting' | 'joining' | 'error' | 'transfer', arg = '', ready = false) {
     const name = esc(cleanName(lsGet('scrabble-fr-nom')));
     const body = this.el.onlineBody;
     if (view === 'menu') {
@@ -725,6 +853,7 @@ export class App {
       body.innerHTML = `
         <h2>Jouer en ligne</h2>
         <p class="muted">Affrontez quelqu’un à distance : créez une partie et envoyez-lui le lien.</p>
+        <section id="olGames" class="my-games" hidden></section>
         <label class="field">Votre nom<input id="olName" maxlength="16" autocomplete="nickname" value="${name}" placeholder="Votre nom" /></label>
         ${arg ? '' : `<section class="setup" aria-label="Nouvelle partie">
           <h3>Nouvelle partie</h3>
@@ -758,6 +887,21 @@ export class App {
           ${'share' in navigator ? '<button class="btn" data-ol="share">Partager…</button>' : ''}
           <button class="btn" data-ol="cancel">Annuler</button>
         </div>`;
+    } else if (view === 'transfer') {
+      const url = this.transferUrl();
+      const qr = qrcode(0, 'M');
+      qr.addData(url);
+      qr.make();
+      body.innerHTML = `
+        <h2>Continuer sur un autre appareil</h2>
+        <p class="muted">Scannez ce code avec l’autre appareil, ou ouvrez-y ce lien : vous y retrouverez votre place dans la partie.</p>
+        <div class="qr">${qr.createSvgTag({ cellSize: 4, margin: 2, scalable: true })}</div>
+        <div class="check"><input id="olLink" readonly value="${esc(url)}" /><button class="btn" data-ol="copy">Copier</button></div>
+        <p class="note bad">Ce lien donne accès à votre place : ne l’envoyez qu’à vous-même. L’appareil actuel sera déconnecté dès que l’autre ouvrira la partie.</p>
+        <div class="row">
+          ${'share' in navigator ? '<button class="btn" data-ol="share-self">Envoyer…</button>' : ''}
+          <button class="btn primary" data-ol="close">Fermer</button>
+        </div>`;
     } else if (view === 'joining') {
       body.innerHTML = `
         <h2>Connexion…</h2>
@@ -770,7 +914,8 @@ export class App {
         <div class="row"><button class="btn primary" data-ol="menu">Retour</button><button class="btn" data-ol="cancel">Fermer</button></div>`;
     }
     $(this.root, '#onlineDialog').classList.add('open');
-    body.querySelector<HTMLInputElement>(view === 'menu' && !name ? '#olName' : '#olCode')?.focus();
+    if (view === 'menu') { this.renderGamesList(); void this.refreshMyGames(); }
+    if (view !== 'transfer') body.querySelector<HTMLInputElement>(view === 'menu' && !name ? '#olName' : '#olCode')?.focus();
   }
 
   private themeOptions(current: ThemeId | null) {
@@ -791,7 +936,8 @@ export class App {
     };
     const cancel = () => {
       if (this.mode !== 'solo') return this.closeLobby();
-      this.closeLinks();
+      // Annuler une partie qu'on vient de créer (personne ne l'a rejointe) la supprime ; sinon on se déconnecte seulement.
+      if (this.waiting) this.leaveGame(); else this.disconnect();
       this.closeLobby();
       setUrlCode(null);
     };
@@ -815,6 +961,11 @@ export class App {
           () => { (e.target as HTMLElement).textContent = 'Copié !'; },
           () => document.execCommand('copy'),
         );
+      } else if (a === 'resume') {
+        const code = (e.target as HTMLElement).closest<HTMLElement>('[data-code]')?.dataset.code;
+        if (code && isCode(code)) { if (!lsGet('scrabble-fr-nom')) lsSet('scrabble-fr-nom', this.myName()); this.joinGame(code); }
+      } else if (a === 'share-self') {
+        navigator.share?.({ title: 'Scrabble FR — ma partie', url: this.transferUrl() }).catch(() => { /* annulé */ });
       } else if (a === 'share') {
         const url = $<HTMLInputElement>(body, '#olLink').value;
         navigator.share?.({ title: 'Scrabble FR', text: 'Une partie de Scrabble ?', url }).catch(() => { /* annulé */ });
@@ -926,6 +1077,12 @@ export class App {
     $(this.root, '#newGame').addEventListener('click', () => this.startNewGame());
     $(this.root, '#endNew').addEventListener('click', () => (this.mode === 'solo' ? this.startNewGame() : this.rematch()));
     this.el.onlineBtn.addEventListener('click', () => this.lobby('menu'));
+    $(this.root, '#transferBtn').addEventListener('click', () => this.lobby('transfer'));
+    $(this.root, '#gamesBar').addEventListener('click', (e) => {
+      const b = (e.target as HTMLElement).closest<HTMLElement>('button');
+      if (b?.dataset.resume) this.joinGame(b.dataset.resume);
+      else if (b?.hasAttribute('data-games')) this.lobby('menu');
+    });
     this.el.sfxBtn.addEventListener('click', () => { this.sound.setSfx(!this.sound.sfxOn); this.renderSoundButtons(); this.sound.place(); });
     this.el.musicBtn.addEventListener('click', () => { this.sound.setMusic(!this.sound.musicOn); this.renderSoundButtons(); });
     this.bindTabs();
@@ -1492,6 +1649,8 @@ export class App {
     $(this.root, '#variantWrap').hidden = !solo;
     $(this.root, '#fantasyWrap').hidden = !solo;
     $(this.root, '#dictWrap').hidden = !solo;
+    $(this.root, '#transferBtn').hidden = solo || !this.link;
+    this.renderGamesBar();
     this.el.onlineBtn.hidden = !solo;
     this.el.newGame.textContent = solo ? 'Nouvelle partie' : 'Quitter';
     this.el.onlineInfo.hidden = solo;
@@ -1662,12 +1821,14 @@ const TEMPLATE = `
     </label>
     <button class="btn primary" id="onlineBtn">Jouer en ligne</button>
     <button class="btn" id="newGame">Nouvelle partie</button>
+    <button class="btn" id="transferBtn" hidden>Continuer sur un autre appareil</button>
     <button class="btn" id="installBtn" hidden>Installer l’appli</button>
   </div>
 </header>
 <section class="scorebox">
   <div id="scores" class="scores"></div>
   <p id="bag" class="bag"></p>
+  <p id="gamesBar" class="games-bar" hidden></p>
 </section>
 <div id="preview" class="preview" aria-live="polite"></div>
 <div id="rack" class="rack" aria-label="Chevalet"></div>

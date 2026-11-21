@@ -1,7 +1,21 @@
 // Liaison avec le serveur de jeu (dossier server/), qui garde les parties et arbitre les coups.
-import type { ClientMsg, ServerMsg } from './protocol';
+import type { ClientMsg, GameSummary, ServerMsg } from './protocol';
 
 const RELAY_URL: string = import.meta.env.VITE_RELAY_URL ?? 'ws://localhost:8787';
+export const isToken = (s: unknown): s is string => typeof s === 'string' && /^[a-f0-9]{16,64}$/.test(s);
+
+/** État à jour de plusieurs parties (« Mes parties en cours ») ; null si le serveur ne répond pas. */
+export async function fetchSummaries(list: { code: string; token: string }[]): Promise<GameSummary[] | null> {
+  if (!list.length) return [];
+  try {
+    const res = await fetch(RELAY_URL.replace(/^ws/, 'http'), {
+      method: 'POST', body: JSON.stringify({ games: list }), headers: { 'content-type': 'text/plain' },
+    });
+    const j = await res.json();
+    return Array.isArray(j?.games) ? j.games as GameSummary[] : null;
+  } catch { return null; }
+}
+
 const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
 export function newCode(): string {
@@ -19,7 +33,7 @@ const FATAL: Record<number, string> = {
   4001: 'Ce code est déjà pris.',
   4003: 'Cette partie est déjà complète.',
   4004: 'Partie introuvable : vérifiez le lien. Elle a peut-être expiré ou été quittée par les deux joueurs.',
-  4005: 'Cette partie a été ouverte dans un autre onglet.',
+  4005: 'Cette partie a été ouverte dans un autre onglet ou sur un autre appareil.',
   4029: 'Serveur saturé, réessayez dans un instant.',
 };
 export const CODE_TAKEN = FATAL[4001];
@@ -31,7 +45,7 @@ export interface LinkHandlers {
   onPeer: (online: boolean) => void;
   onMessage: (msg: ServerMsg) => void;
   /** `fatal` : la liaison est abandonnée (pas de reconnexion). */
-  onError: (text: string, fatal: boolean) => void;
+  onError: (text: string, fatal: boolean, closeCode?: number) => void;
 }
 
 /** Liaison d'un joueur au serveur, avec reconnexion automatique. */
@@ -70,7 +84,7 @@ export class GameLink {
       if (this.peerOnline) { this.peerOnline = false; this.h.onPeer(false); }
       if (FATAL[e.code]) {
         this.closed = true;
-        return this.h.onError(FATAL[e.code], true);
+        return this.h.onError(FATAL[e.code], true, e.code);
       }
       // Coupure réseau : on réessaie, de plus en plus lentement (jusqu'à 15 s).
       const first = this.retries === 0;

@@ -87,8 +87,25 @@ const online = () => [...conns.values()].reduce((n, c) => n + (c[0] ? 1 : 0) + (
 const log = (msg: string) => console.log(`${new Date().toISOString()} ${msg} [${games.rooms.size} partie(s), ${online()} connexion(s)]`);
 const WHO = ['joueur 1', 'joueur 2'];
 
-const http = createServer((_req, res) => {
-  res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
+// HTTP : page d'état, et POST {games: [{code, token}]} → résumés pour « Mes parties en cours ».
+// Le corps est envoyé en text/plain par le site (pas de requête préalable CORS) ; les jetons restent hors des URL.
+const CORS = { 'access-control-allow-origin': '*', 'access-control-allow-methods': 'GET, POST, OPTIONS', 'access-control-allow-headers': 'content-type' };
+const http = createServer((req, res) => {
+  if (req.method === 'OPTIONS') { res.writeHead(204, CORS); return res.end(); }
+  if (req.method === 'POST') {
+    let body = '';
+    req.setEncoding('utf8');
+    req.on('data', (d: string) => { body += d; if (body.length > 16_384) req.destroy(); });
+    req.on('end', () => {
+      let list: unknown[] = [];
+      try { const j = JSON.parse(body); if (Array.isArray(j?.games)) list = j.games.slice(0, 50); } catch { /* corps invalide */ }
+      const out = list.map((g) => games.summary((g as { code?: unknown })?.code, (g as { token?: unknown })?.token));
+      res.writeHead(200, { ...CORS, 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(JSON.stringify({ games: out }));
+    });
+    return;
+  }
+  res.writeHead(200, { ...CORS, 'content-type': 'text/plain; charset=utf-8' });
   res.end(`Serveur Scrabble FR — ${games.rooms.size} partie(s), ${dicts.size} liste(s) chargée(s).\n`);
 });
 const wss = new WebSocketServer({ server: http, maxPayload: MAX_MSG });

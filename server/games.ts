@@ -2,7 +2,7 @@
 // il reçoit les messages des joueurs et dit quoi envoyer à qui (testable sans réseau).
 import { newGame, type GameState, type Variant } from '../src/game/game';
 import { applyAction, parseAction, viewFor } from '../src/game/remote';
-import { CLOSE, cleanName, type ServerMsg } from '../src/net/protocol';
+import { CLOSE, cleanName, type GameSummary, type ServerMsg } from '../src/net/protocol';
 import { themeOf, type ThemeId } from '../src/game/themes';
 import { DEFAULT_DICT, dictOf, type DictId } from '../src/game/dicts';
 
@@ -126,6 +126,22 @@ export class Games {
     if (room.state) this.io.send(room, seat, { type: 'state', state: viewFor(room.state, seat), you: seat });
   }
   private broadcast(room: Room) { this.sendState(room, 0); this.sendState(room, 1); }
+
+  /** Résumé de la partie `code` pour le joueur qui détient `token`. */
+  summary(code: unknown, token: unknown): GameSummary {
+    const c = typeof code === 'string' ? code : '';
+    const room = this.rooms.get(c);
+    const seat = room?.seats.findIndex((s) => !!s && s.token === token) ?? -1;
+    if (!room || seat < 0) return { code: c, found: false };
+    const st = room.state;
+    if (!st) return { code: c, found: true, waiting: true };
+    const me = seat as SeatNo, opp = me === 0 ? 1 : 0;
+    const myTurn = !st.over && (st.proposal ? st.proposal.player !== me : st.current === me);
+    return {
+      code: c, found: true, opp: st.players[opp].name, scores: [st.players[me].score, st.players[opp].score],
+      myTurn, over: st.over,
+    };
+  }
 
   /** Supprime les parties trop anciennes ; renvoie leurs codes. */
   sweep(): string[] {
