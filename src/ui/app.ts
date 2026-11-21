@@ -1420,14 +1420,24 @@ export class App {
   private pinching = false;
 
   /** Pendant un glissement sur le plateau zoomé, fait défiler quand la lettre approche d'un bord. */
-  private edgeScroll(x: number, y: number, finger = y) {
-    if (this.zoom <= 1) return;
+  /**
+   * Pendant un glissement sur le plateau zoomé : fait défiler quand la lettre (pas le doigt) reste un moment
+   * tout près d'un bord. Vitesse progressive selon la profondeur dans la bande du bord, pour pouvoir viser
+   * les cases du bord sans que le plateau file dessous. Renvoie l'instant d'entrée dans la bande (0 = hors bande).
+   */
+  private edgeScroll(x: number, y: number, since: number): number {
+    if (this.zoom <= 1) return 0;
     const sc = $(this.root, '#boardScroll');
     const r = sc.getBoundingClientRect();
-    const m = 40, v = 12;
-    const dx = x < r.left + m ? -v : x > r.right - m ? v : 0;
-    const dy = y < r.top + m ? -v : finger > r.bottom - m ? v : 0;
-    if (dx || dy) sc.scrollBy(dx, dy);
+    const m = 26, max = 7, dwell = 350;
+    const depth = (d: number) => Math.min(1, Math.max(0, d / m));
+    const dx = x < r.left + m ? -depth(r.left + m - x) : x > r.right - m ? depth(x - (r.right - m)) : 0;
+    const dy = y < r.top + m ? -depth(r.top + m - y) : y > r.bottom - m ? depth(y - (r.bottom - m)) : 0;
+    if (!dx && !dy) return 0;
+    const now = performance.now();
+    if (!since) return now;
+    if (now - since > dwell) sc.scrollBy(Math.round(dx * max), Math.round(dy * max));
+    return since;
   }
 
   private bindDrag() {
@@ -1439,7 +1449,7 @@ export class App {
     type Drag = {
       id: number; x: number; y: number; src: HTMLElement; ghost: HTMLElement | null; pointer: number;
       fromRack: boolean; rack: RackGeom | null; slot: number | null; over: 'rack' | 'board' | null; cell: number;
-      lastX: number; lastY: number; scrolling: boolean; touch: boolean;
+      lastX: number; lastY: number; scrolling: boolean; touch: boolean; edgeSince: number;
     };
     let drag: Drag | null = null;
 
@@ -1496,7 +1506,7 @@ export class App {
       drag = {
         id: +tileEl.dataset.id!, x: e.clientX, y: e.clientY, src: tileEl, ghost: null, pointer: e.pointerId,
         fromRack: !!tileEl.closest('#rack'), rack: null, slot: null, over: null, cell: -1,
-        lastX: e.clientX, lastY: e.clientY, scrolling: false, touch: e.pointerType !== 'mouse',
+        lastX: e.clientX, lastY: e.clientY, scrolling: false, touch: e.pointerType !== 'mouse', edgeSince: 0,
       };
       tileEl.setPointerCapture(e.pointerId);
     });
@@ -1515,10 +1525,16 @@ export class App {
         d.ghost.classList.add('ghost');
         d.ghost.style.translate = '';
         document.body.appendChild(d.ghost);
+        document.body.classList.add('tile-drag');
         d.src.classList.add('dragging');
         if (d.fromRack) d.slot = d.rack.others.length + 1; // force la première mise en place
       }
-      const over = rackZone(e.clientX, e.clientY) ? 'rack' : 'board';
+      // La lettre est sur le chevalet si le doigt y est ET que la lettre tenue (au-dessus du doigt) n'est plus
+      // au-dessus du plateau : on peut ainsi viser les dernières lignes du plateau, doigt déjà sur le chevalet.
+      const sr = $(this.root, '#boardScroll').getBoundingClientRect();
+      const py = e.clientY - lift(d);
+      const aboveBoard = e.clientX >= sr.left && e.clientX <= sr.right && py >= sr.top && py <= sr.bottom;
+      const over = !aboveBoard && rackZone(e.clientX, e.clientY) ? 'rack' : 'board';
       if (over !== d.over) { d.over = over; sizeGhost(d); }
       const g = d.rack!;
       let slot: number | null = null;
@@ -1541,7 +1557,7 @@ export class App {
         d.scrolling = true;
         const tick = () => {
           if (drag !== d || d.over !== 'board') { d.scrolling = false; return; }
-          this.edgeScroll(d.lastX, d.lastY, d.lastY + lift(d));
+          d.edgeSince = this.edgeScroll(d.lastX, d.lastY, d.edgeSince);
           this.highlightDrop(d.lastX, d.lastY);
           requestAnimationFrame(tick);
         };
@@ -1561,6 +1577,7 @@ export class App {
       const prev = this.tileRects();
       prev.set(d.id, d.ghost.getBoundingClientRect());
       d.ghost.remove();
+      document.body.classList.remove('tile-drag');
       d.src.classList.remove('dragging');
       if (cancelled) return this.flipFrom(prev, () => this.render());
       if (d.slot !== null) return this.flipFrom(prev, () => this.returnTile(d.id, d.slot!));

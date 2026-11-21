@@ -135,6 +135,8 @@ html, body { height: 100%; overflow: hidden; overscroll-behavior: none; }
 }
 .app .zoom-btn[aria-pressed] { color: var(--ink); }
 @media (hover: hover) and (pointer: fine) { .zoom-btn { display: none; } }
+/* Pendant qu'on tient une lettre, le bouton loupe ne doit pas cacher la case du coin. */
+.tile-drag .zoom-btn { visibility: hidden; }
 /* Pendant le pincement : aperçu par transformation seulement (calculé par la carte graphique). */
 .board.zooming { transform-origin: 0 0; will-change: transform; }
 .scorebox { grid-area: scores; }
