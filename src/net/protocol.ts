@@ -4,9 +4,10 @@
 import type { GameState, Variant } from '../game/game';
 import type { Action } from '../game/remote';
 import type { ThemeId } from '../game/themes';
+import type { DictId } from '../game/dicts';
 
 /** Options choisies par la personne qui crée la partie. */
-export interface GameOptions { variant: Variant | null; theme?: ThemeId | null }
+export interface GameOptions { variant: Variant | null; theme?: ThemeId | null; dict?: DictId | null }
 
 export type ClientMsg =
   /** Envoyé à chaque connexion ; `options` n'est lu qu'à la création de la partie. */

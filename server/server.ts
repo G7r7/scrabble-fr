@@ -1,4 +1,4 @@
-// Serveur de jeu en ligne de Scrabble FR : garde les parties, arbitre chaque coup avec son dictionnaire
+// Serveur de jeu en ligne de Scrabble FR : garde les parties, arbitre chaque coup avec la liste de mots choisie
 // et envoie à chaque joueur sa vue de la partie. Les parties sont sauvegardées sur disque
 // (data/games.json) et survivent à un redémarrage.
 //
@@ -7,12 +7,14 @@
 // Compilé en un seul fichier dist/server.mjs (npm run server:build à la racine du dépôt).
 import { createServer } from 'node:http';
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { normalizeWord } from '../src/dict/normalize.js';
 import { CLOSE } from '../src/net/protocol';
 import { Games, type Room, type SeatNo } from './games';
+import { DEFAULT_DICT, dictInfo, type DictId } from '../src/game/dicts';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT ?? 8787);
@@ -21,14 +23,28 @@ const MAX_MSG = 64 * 1024;
 const DATA = process.env.DATA_DIR ?? join(HERE, 'data');
 const SAVE = join(DATA, 'games.json');
 
-// ---------- Dictionnaire ----------
-const dictPath = [process.env.DICT_PATH, join(HERE, 'fr-libre.txt'), join(HERE, '../../public/dict/fr-libre.txt')]
-  .find((p): p is string => !!p && existsSync(p));
-if (!dictPath) throw new Error('Dictionnaire introuvable (fr-libre.txt)');
-const words = new Set<string>();
-for (const line of readFileSync(dictPath, 'utf8').split(/\r?\n/)) {
-  const w = normalizeWord(line);
-  if (w) words.add(w);
+// ---------- Listes de mots (chargées à la demande, puis gardées en mémoire) ----------
+const DICT_DIRS = [process.env.DICT_DIR, HERE, join(HERE, '../../public/dict')].filter((d): d is string => !!d);
+const dicts = new Map<DictId, Promise<Set<string>>>();
+function loadDict(id: DictId): Promise<Set<string>> {
+  let p = dicts.get(id);
+  if (!p) {
+    p = (async () => {
+      const file = dictInfo(id).file;
+      const path = DICT_DIRS.map((d) => join(d, file)).find((f) => existsSync(f));
+      if (!path) throw new Error(`Liste introuvable : ${file}`);
+      const set = new Set<string>();
+      for (const line of (await readFile(path, 'utf8')).split(/\r?\n/)) {
+        const w = normalizeWord(line);
+        if (w) set.add(w);
+      }
+      console.log(`Liste « ${dictInfo(id).label} » chargée : ${set.size} mots`);
+      return set;
+    })();
+    p.catch(() => dicts.delete(id));
+    dicts.set(id, p);
+  }
+  return p;
 }
 
 // ---------- Connexions ----------
@@ -55,7 +71,7 @@ function saveNow() {
 
 const games = new Games({
   send: (room, seat, msg) => sendWs(conns.get(room.code)?.[seat]?.ws, msg),
-  invalidWords: (ws) => ws.filter((w) => !words.has(w)),
+  invalidWords: async (ws, dict) => { const set = await loadDict(dict); return ws.filter((w) => !set.has(w)); },
   changed: () => { saveTimer ??= setTimeout(saveNow, 1000); },
 });
 try {
@@ -69,7 +85,7 @@ const WHO = ['joueur 1', 'joueur 2'];
 
 const http = createServer((_req, res) => {
   res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
-  res.end(`Serveur Scrabble FR — ${games.rooms.size} partie(s), ${words.size} mots.\n`);
+  res.end(`Serveur Scrabble FR — ${games.rooms.size} partie(s), ${dicts.size} liste(s) chargée(s).\n`);
 });
 const wss = new WebSocketServer({ server: http, maxPayload: MAX_MSG });
 
@@ -136,5 +152,7 @@ const shutdown = () => { if (saveTimer) { clearTimeout(saveTimer); saveNow(); } 
 process.on('SIGTERM', shutdown);
 process.on('SIGINT', shutdown);
 
+// La liste libre (par défaut) est chargée dès le départ ; les autres à la première partie qui les utilise.
+await loadDict(DEFAULT_DICT);
 http.listen(PORT, HOST, () =>
-  console.log(`Serveur Scrabble FR à l'écoute sur ${HOST}:${PORT} — ${words.size} mots, ${games.rooms.size} partie(s) reprise(s)`));
+  console.log(`Serveur Scrabble FR à l'écoute sur ${HOST}:${PORT} — ${games.rooms.size} partie(s) reprise(s)`));

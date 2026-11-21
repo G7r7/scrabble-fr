@@ -25,21 +25,33 @@ Scrabble en français, à jouer dans le navigateur contre l'ordinateur.
   L'appli s'ouvre dans sa propre fenêtre, affiche une pastille quand c'est votre tour et se lance hors ligne pour jouer contre l'ordinateur
   (`public/manifest.webmanifest`, `public/sw.js`).
 
-## Dictionnaire
+## Listes de mots
+
+Chaque partie se joue avec une liste au choix (Options en solo, ou à la création d'une partie en ligne). Toutes sont libres :
+
+| Liste | Mots | Source | Licence |
+|---|---|---|---|
+| Mots courants | ≈ 32 000 | [Lexique 3.83](http://www.lexique.org/) : formes d'au moins 1 occurrence par million | CC BY-SA 4.0 |
+| Libre (par défaut) | ≈ 311 000 | [`an-array-of-french-words`](https://github.com/words/an-array-of-french-words) | MIT |
+| Complète | ≈ 408 000 | Lexique des formes fléchies de [Grammalecte](https://grammalecte.net/) 7.7 | MPL 2.0 |
+| Étendue | ≈ 644 000 | [Morphalou 3.1](https://www.ortolang.fr/market/lexicons/morphalou) (ATILF / CNRS) | LGPL-LR |
+
+Les accents sont retirés ; noms propres, sigles, mots composés et locutions sont écartés. Les mots de deux lettres
+suivent partout la liste usuelle du Scrabble francophone. Les listes dérivées (`public/dict/fr-*.txt`) restent
+sous la licence de leur source.
 
 La liste officielle de la Fédération (ODS) est protégée par le droit d'auteur et n'est **pas** incluse.
-
-- Par défaut, le jeu utilise une **liste libre** (≈ 311 000 mots) tirée du paquet MIT
-  [`an-array-of-french-words`](https://github.com/words/an-array-of-french-words).
-  Les accents sont retirés et les mots composés écartés. Les mots de deux lettres suivent la liste usuelle du Scrabble francophone.
-- Si vous possédez l'ODS, vous pouvez **l'importer** depuis le panneau « Dictionnaire » : fichier texte, un mot par ligne.
-  Le fichier est conservé dans IndexedDB, dans votre navigateur uniquement. Il n'est jamais envoyé ni publié.
+Si vous possédez l'ODS, vous pouvez **l'importer** depuis le panneau « Dictionnaire » (un mot par ligne) et la choisir
+pour vos parties contre l'ordinateur. Le fichier est conservé dans IndexedDB, dans votre navigateur uniquement :
+il n'est jamais envoyé ni publié, et ne sert donc pas en ligne.
 
 ## Développement
 
 ```sh
 npm install
 npm run dict     # régénère public/dict/fr-libre.txt
+node scripts/build-dicts.mjs <Lexique383.tsv> <grammalecte.txt> <Morphalou3.1_CSV.csv>  # les trois autres listes (sources : voir le script)
+npm run themes   # régénère les mots des thèmes fantasy
 npm run dev
 npm test
 npm run build
@@ -50,7 +62,7 @@ Chaque push sur `main` déploie le site sur GitHub Pages (`.github/workflows/dep
 ## Jeu en ligne : le serveur de jeu (`server/`)
 
 Le site reste statique. Pour le jeu en ligne, un serveur WebSocket (Node + `ws`) garde les parties et les arbitre :
-il tient le sac, vérifie chaque coup avec la liste libre (`public/dict/fr-libre.txt`) en réutilisant les règles
+il tient le sac, vérifie chaque coup avec la liste choisie à la création (`public/dict/fr-*.txt`, chargée à la demande) en réutilisant les règles
 de `src/game/`, et n'envoie à chaque joueur que sa vue (ni le chevalet adverse, ni l'ordre du sac).
 Les parties sont sauvegardées dans `data/games.json` et survivent à un redémarrage ; elles expirent après
 2 jours sans adversaire, 3 jours une fois finies, 30 jours sans aucun coup.

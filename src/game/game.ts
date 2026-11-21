@@ -5,6 +5,7 @@ import { rackValue } from './rules';
 import type { Board, FormedWord, Move } from './types';
 import type { Level } from '../ai/player';
 import { applyTheme, type ThemeId } from './themes';
+import type { GameDict } from './dicts';
 
 export type Variant = 'challenge' | 'hardcore';
 export const VARIANTS: { id: Variant | 'normal'; label: string; help: string }[] = [
@@ -48,6 +49,8 @@ export interface GameState {
    * - hardcore : chaque coup est contrôlé d'office ; un mot refusé coûte 10 points et le tour.
    */
   variant?: Variant;
+  /** Liste de mots de la partie (absente = liste libre). */
+  dict?: GameDict;
   /** Mode fantasy : thème de la partie (ses mots rapportent double). */
   theme?: ThemeId;
   /** Mode fantasy : cases des mots du thème déjà joués (elles chatoient). */
@@ -59,7 +62,7 @@ export interface GameState {
 export const HUMAN = 0, AI = 1;
 const MAX_SCORELESS = 6;
 
-export function newGame(level: Level, online?: { names: [string, string] } | null, opts: { variant?: Variant | null; theme?: ThemeId | null } = {}): GameState {
+export function newGame(level: Level, online?: { names: [string, string] } | null, opts: { variant?: Variant | null; theme?: ThemeId | null; dict?: GameDict | null } = {}): GameState {
   const bag = newBag();
   const [n0, n1] = online?.names ?? ['Vous', 'Ordinateur'];
   const players: [Player, Player] = [
@@ -73,6 +76,7 @@ export function newGame(level: Level, online?: { names: [string, string] } | nul
     ...(online ? { online: true } : {}),
     ...(opts.variant ? { variant: opts.variant } : {}),
     ...(opts.theme ? { theme: opts.theme } : {}),
+    ...(opts.dict && opts.dict !== 'libre' ? { dict: opts.dict } : {}),
   };
 }
 

@@ -4,6 +4,7 @@ import { newGame, type GameState, type Variant } from '../src/game/game';
 import { applyAction, parseAction, viewFor } from '../src/game/remote';
 import { CLOSE, cleanName, type ServerMsg } from '../src/net/protocol';
 import { themeOf, type ThemeId } from '../src/game/themes';
+import { DEFAULT_DICT, dictOf, type DictId } from '../src/game/dicts';
 
 export type SeatNo = 0 | 1;
 export interface Seat { token: string; name: string; left: boolean }
@@ -12,6 +13,8 @@ export interface Room {
   seats: [Seat, Seat | null];
   variant: Variant | null;
   theme?: ThemeId | null;
+  /** Liste de mots qui arbitre la partie (absente = liste libre). */
+  dict?: DictId | null;
   state: GameState | null;
   /** Dernière activité (création, arrivée d'un joueur, coup joué), en ms. */
   updated: number;
@@ -28,8 +31,8 @@ const isToken = (s: string) => /^[a-f0-9]{16,64}$/.test(s);
 export interface GamesIo {
   /** Envoie un message au joueur `seat` de la partie s'il est connecté. */
   send(room: Room, seat: SeatNo, msg: ServerMsg): void;
-  /** Mots absents du dictionnaire du serveur. */
-  invalidWords(words: string[]): string[];
+  /** Mots absents de la liste `dict` (chargée à la demande). */
+  invalidWords(words: string[], dict: DictId): string[] | Promise<string[]>;
   /** Les parties ont changé (à sauvegarder). */
   changed(): void;
   now?: () => number;
@@ -77,6 +80,7 @@ export class Games {
         const v = (m.options as Record<string, unknown>).variant;
         room.variant = v === 'challenge' || v === 'hardcore' ? v : null;
         room.theme = themeOf((m.options as Record<string, unknown>).theme);
+        room.dict = dictOf((m.options as Record<string, unknown>).dict);
       }
       if (!room.state && room.seats[0].name && room.seats[1]?.name) return this.start(room);
       if (!room.state) return this.io.send(room, seat, { type: 'waiting' });
@@ -91,7 +95,7 @@ export class Games {
       if (!room.state) return this.io.send(room, seat, { type: 'error', message: 'La partie n’a pas commencé.' });
       const action = parseAction(m.action);
       if (!action) return this.io.send(room, seat, { type: 'error', message: 'Coup mal formé.' });
-      const err = await applyAction(room.state, seat, action, async (w) => this.io.invalidWords(w));
+      const err = await applyAction(room.state, seat, action, async (w) => this.io.invalidWords(w, room.dict ?? DEFAULT_DICT));
       if (err) return this.io.send(room, seat, { type: 'error', message: err });
       room.updated = this.now();
       this.io.changed();
@@ -112,7 +116,7 @@ export class Games {
 
   private start(room: Room) {
     const [a, b] = room.seats;
-    room.state = newGame('moyen', { names: [a.name, b!.name] }, { variant: room.variant, theme: room.theme });
+    room.state = newGame('moyen', { names: [a.name, b!.name] }, { variant: room.variant, theme: room.theme, dict: room.dict });
     room.updated = this.now();
     this.io.changed();
     this.broadcast(room);

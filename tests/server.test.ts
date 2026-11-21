@@ -36,6 +36,28 @@ describe('serveur de jeu', () => {
     expect(st.state.players[0].rack.every((l) => l === '')).toBe(true); // chevalet adverse masqué
   });
 
+  test('la partie est arbitrée avec la liste choisie à la création', async () => {
+    const asked: string[] = [];
+    const games = new Games({
+      send: () => {}, changed: () => {},
+      invalidWords: (w, dict) => { asked.push(dict); return []; },
+    });
+    const a = seatOf(games.join('ABC234', A, true));
+    await games.message(a.room, 0, { type: 'hello', name: 'Alice', options: { variant: null, dict: 'etendu' } });
+    const b = seatOf(games.join('ABC234', B, false));
+    await games.message(b.room, 1, { type: 'hello', name: 'Bob' });
+    const s = a.room.state!;
+    expect(s.dict).toBe('etendu');
+    s.players[s.current].rack = ['C', 'H', 'A', 'T', 'E', 'S', 'R'];
+    const chat = [..."CHAT"].map((letter, i) => ({ r: 7, c: 6 + i, letter, blank: false }));
+    await games.message(a.room, s.current, { type: 'action', action: { type: 'play', placements: chat } });
+    expect(asked).toEqual(['etendu']);
+    // Une liste inconnue (ou le fichier ODS d'un joueur) est ignorée : liste libre.
+    const c = seatOf(games.join('XYZ234', C, true));
+    await games.message(c.room, 0, { type: 'hello', name: 'Carl', options: { variant: null, dict: 'ods' } });
+    expect(c.room.dict).toBeNull();
+  });
+
   test('refus : code pris, partie complète, introuvable ; reconnexion acceptée', () => {
     const { games } = setup();
     seatOf(games.join('ABC234', A, true));

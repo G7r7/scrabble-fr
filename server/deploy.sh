@@ -1,5 +1,5 @@
 #!/bin/sh
-# Compile le serveur de jeu et l'envoie sur alwaysdata (accès SSH par clé requis), avec le dictionnaire.
+# Compile le serveur de jeu et l'envoie sur alwaysdata (accès SSH par clé requis), avec les listes de mots.
 # Les parties en cours sont dans ~/$DEST/data/games.json : ce script n'y touche pas.
 # Après le premier envoi, créez le site dans l'administration alwaysdata (voir README).
 # Pour une mise à jour : relancez ce script, puis redémarrez le site depuis l'administration.
@@ -14,6 +14,6 @@ npm run server:build
 ssh "$HOST" "mkdir -p ~/$DEST"
 # dist/server.mjs est copié sous le nom server.mjs : la commande du site (node server.mjs) ne change pas.
 scp server/dist/server.mjs "$HOST:~/$DEST/server.mjs"
-scp server/package.json server/package-lock.json public/dict/fr-libre.txt "$HOST:~/$DEST/"
+scp server/package.json server/package-lock.json public/dict/fr-*.txt "$HOST:~/$DEST/"
 ssh "$HOST" "$NODE_PATH_CMD && cd ~/$DEST && node -v && npm ci --omit=dev --no-audit --no-fund"
 echo "Serveur envoyé dans ~/$DEST sur $HOST. Redémarrez le site depuis l'administration alwaysdata."

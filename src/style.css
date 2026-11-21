@@ -756,3 +756,10 @@ input.invalid { border-color: var(--bad); outline: 1px solid var(--bad); }
   .cs *, .cs { animation: none !important; transition: none !important; }
   .cs .cs-title span, .cs .cs-w b { opacity: 1; }
 }
+
+/* ---------- Listes de mots ---------- */
+.dict-tag { background: #475569; }
+.dict-credits { margin: 10px 0; padding-left: 18px; font-size: 0.82rem; line-height: 1.45; color: var(--muted); }
+.dict-credits b { color: var(--ink); font-weight: 600; }
+.dict-credits a { color: inherit; }
+.dict-head .muted { display: block; font-size: 0.8rem; margin-top: 2px; }

@@ -6,6 +6,7 @@ import {
   saveGame, winnerText, type GameState, type HistoryEntry, type Variant,
 } from '../game/game';
 import type { Action } from '../game/remote';
+import { DICTS, dictInfo, dictOf, type DictId, type GameDict } from '../game/dicts';
 import { THEMES, THEME_MULT, applyTheme, themeInfo, themeOf, type ThemeId } from '../game/themes';
 import type { Placement } from '../game/types';
 import { CODE_TAKEN, GameLink, isCode, newCode, newToken, normalizeCode } from '../net/online';
@@ -21,7 +22,6 @@ import { normalizeWord } from '../dict/normalize.js';
 interface RackTile { id: number; letter: string }
 interface PendingTile extends RackTile { r: number; c: number; assigned: string }
 type Tab = 'game' | 'history' | 'dict' | 'options';
-interface DictInfo { source: 'libre' | 'ods'; count: number; name: string }
 
 const BONUS_LABEL: Record<string, string> = { MT: 'Mot<br>×3', MD: 'Mot<br>×2', LT: 'Lettre<br>×3', LD: 'Lettre<br>×2' };
 const LEVELS: Level[] = ['facile', 'moyen', 'difficile'];
@@ -34,6 +34,7 @@ function lsDel(k: string) { try { localStorage.removeItem(k); } catch { /* rien 
 const TOKEN_KEY = 'scrabble-fr-jeton-';
 const VARIANT_KEY = 'scrabble-fr-variante';
 const THEME_KEY = 'scrabble-fr-theme';
+const DICT_KEY = 'scrabble-fr-liste';
 const variantOf = (v: unknown): Variant | null => (v === 'challenge' || v === 'hardcore' ? v : null);
 /** Première lettre en minuscule (pour enchaîner « Nom : mot refusé… »). */
 const lcFirst = (t: string) => t.charAt(0).toLowerCase() + t.slice(1);
@@ -55,7 +56,14 @@ export class App {
   private busy = false;
   private exchangeMode = false;
   private exchangeSel = new Set<number>();
-  private dict: DictInfo | null = null;
+  /** Liste chargée dans le moteur (vérification des mots et ordinateur). */
+  private dict: { id: GameDict; label: string; count: number } | null = null;
+  /** Liste demandée (la partie en cours) et chargement en cours. */
+  private dictWanted: GameDict | null = null;
+  private dictLoading: Promise<void> = Promise.resolve();
+  private dictError = '';
+  /** Nom du fichier ODS importé sur cet appareil, s'il y en a un. */
+  private odsName: string | null = null;
   private previewToken = 0;
   private tab: Tab = 'game';
   private historySeen = 0;
@@ -97,19 +105,22 @@ export class App {
     this.bindZoom();
 
     const loading = $(this.root, '#loading');
-    try {
-      await this.loadDictionary();
-    } catch (err) {
-      loading.innerHTML = `<p>Impossible de charger le dictionnaire.</p><p class="muted">${esc(String(err))}</p>`;
+    const ods = await loadOds();
+    this.odsName = ods?.name ?? null;
+    // Avant le choix de liste, un ODS importé servait à toutes les parties : on garde ce choix.
+    if (!lsGet(DICT_KEY) && ods) lsSet(DICT_KEY, 'ods');
+    const saved = loadGame();
+    this.game = saved && !saved.over ? saved : newGame(this.readLevel(), null, this.prefs());
+    await this.useDict(this.gameDict());
+    if (!this.dict) {
+      loading.innerHTML = `<p>Impossible de charger le dictionnaire.</p><p class="muted">${esc(this.dictError)}</p>`;
       return;
     }
     loading.remove();
-
-    const saved = loadGame();
-    this.game = saved && !saved.over ? saved : newGame(this.readLevel(), null, this.prefs());
     (this.el.level as HTMLSelectElement).value = this.game.level;
     (this.el.variant as HTMLSelectElement).value = this.variantPref() ?? 'normal';
     (this.el.fantasy as HTMLSelectElement).value = this.themePref() ?? '';
+    this.renderDictSelect();
     this.seen = this.game.history.length;
     this.syncRack();
     this.render();
@@ -126,46 +137,94 @@ export class App {
 
   // ---------- Dictionnaire ----------
 
-  private async loadDictionary() {
-    const ods = await loadOds();
-    if (ods) {
-      const { count } = await this.engine.load(ods.text);
-      this.dict = { source: 'ods', count, name: ods.name };
-    } else {
-      const res = await fetch(`${import.meta.env.BASE_URL}dict/fr-libre.txt`);
+  /** Liste voulue pour la partie en cours (un ODS importé ne sert qu'en solo). */
+  private gameDict(): GameDict {
+    const d = this.game?.dict ?? 'libre';
+    return d === 'ods' && (this.mode === 'online' || !this.odsName) ? 'libre' : d;
+  }
+
+  /** Charge la liste `id` dans le moteur, si ce n'est pas déjà elle (les chargements s'enchaînent). */
+  private useDict(id: GameDict): Promise<void> {
+    if (id === this.dictWanted) return this.dictLoading;
+    this.dictWanted = id;
+    this.dictLoading = this.dictLoading.then(async () => {
+      if (this.dictWanted !== id || this.dict?.id === id) return;
+      this.dictError = '';
+      this.renderDict();
+      if (id === 'ods') {
+        const ods = await loadOds();
+        if (ods) {
+          const { count } = await this.engine.load(ods.text);
+          this.dict = { id, label: ods.name, count };
+          return;
+        }
+        id = 'libre';
+      }
+      const info = dictInfo(id);
+      const res = await fetch(`${import.meta.env.BASE_URL}dict/${info.file}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const { count } = await this.engine.load(await res.text());
-      this.dict = { source: 'libre', count, name: 'Liste libre' };
-    }
+      this.dict = { id, label: info.label, count };
+    }).catch((err) => {
+      this.dictError = String(err);
+      this.dictWanted = null;
+      this.setStatus(`Impossible de charger la liste de mots : ${err}`, true);
+    }).then(() => {
+      this.renderDict();
+      if (this.game) void this.updatePreview();
+    });
+    return this.dictLoading;
+  }
+
+  /** Mots absents de la liste de la partie (attend la fin d'un chargement en cours). */
+  private async invalid(words: string[]): Promise<string[]> {
+    await this.dictLoading;
+    return this.engine.invalidWords(words);
+  }
+
+  private dictPref(): GameDict {
+    const v = lsGet(DICT_KEY);
+    return v === 'ods' && this.odsName ? 'ods' : dictOf(v) ?? 'libre';
+  }
+
+  /** Change la liste de la partie contre l'ordinateur (tout de suite) et des suivantes. */
+  private setDict(id: GameDict) {
+    lsSet(DICT_KEY, id);
+    this.renderDictSelect();
+    if (this.mode !== 'solo') return this.setStatus('La liste choisie servira pour vos prochaines parties contre l’ordinateur.');
+    if (id === 'libre') delete this.game.dict; else this.game.dict = id;
+    saveGame(this.game);
+    this.render();
+    this.setStatus(id === 'ods' ? `Liste : votre fichier « ${this.odsName} ».`
+      : `Liste « ${dictInfo(id).label} » : ${dictInfo(id).help}`);
   }
 
   private async importOds(file: File) {
     this.setStatus(`Import de « ${file.name} »…`);
     try {
+      await this.dictLoading;
       const { count, normalized } = await this.engine.load(await file.text());
+      // Le moteur contient maintenant ce fichier : on le recharge si l'import échoue ou s'il ne sert pas.
+      this.dict = null;
+      this.dictWanted = null;
       if (count < 1000) {
         this.setStatus(`Ce fichier ne contient que ${count} mots valides : import annulé.`, true);
-        await this.loadDictionary();
-        this.renderDict();
-        return;
+        return this.render();
       }
       await saveOds({ name: file.name, count, text: normalized });
-      this.dict = { source: 'ods', count, name: file.name };
+      this.odsName = file.name;
+      this.setDict('ods');
       this.setStatus(`Dictionnaire importé : ${count.toLocaleString('fr-FR')} mots. Il reste sur cet appareil.`);
     } catch (err) {
       this.setStatus(`Échec de l'import : ${err}`, true);
+      this.render();
     }
-    this.renderDict();
-    void this.updatePreview();
   }
 
   private async revertToFree() {
     await clearOds();
-    this.setStatus('Retour à la liste libre…');
-    await this.loadDictionary();
-    this.setStatus('Liste libre rechargée.');
-    this.renderDict();
-    void this.updatePreview();
+    this.odsName = null;
+    this.setDict('libre');
   }
 
   // ---------- Partie ----------
@@ -181,7 +240,7 @@ export class App {
   private variantPref(): Variant | null { return variantOf(lsGet(VARIANT_KEY)); }
   private themePref(): ThemeId | null { return themeOf(lsGet(THEME_KEY)); }
   /** Options de la prochaine partie contre l'ordinateur. */
-  private prefs() { return { variant: this.variantPref(), theme: this.themePref() }; }
+  private prefs() { return { variant: this.variantPref(), theme: this.themePref(), dict: this.dictPref() }; }
 
   private startNewGame() {
     if (this.mode !== 'solo') return this.quitOnline();
@@ -260,7 +319,7 @@ export class App {
       return this.afterTurn();
     }
     this.busy = true;
-    const invalid = await this.engine.invalidWords(res.words.map((w) => w.word));
+    const invalid = await this.invalid(res.words.map((w) => w.word));
     this.busy = false;
     if (g !== this.game) return;
     if (invalid.length && g.variant === 'hardcore') {
@@ -338,7 +397,7 @@ export class App {
     if (!p) return;
     this.busy = true;
     this.render();
-    const [invalid] = await Promise.all([this.engine.invalidWords(p.move.words.map((w) => w.word)), delay(900)]);
+    const [invalid] = await Promise.all([this.invalid(p.move.words.map((w) => w.word)), delay(900)]);
     this.busy = false;
     if (g !== this.game || g.proposal !== p) return;
     const odds = invalid.length
@@ -367,7 +426,7 @@ export class App {
       return this.afterTurn();
     }
     this.busy = true;
-    const invalid = await this.engine.invalidWords(p.move.words.map((w) => w.word));
+    const invalid = await this.invalid(p.move.words.map((w) => w.word));
     this.busy = false;
     if (g !== this.game || g.proposal !== p) return;
     challenge(g, invalid);
@@ -457,7 +516,7 @@ export class App {
     try {
       const g = this.game;
       const [d] = await Promise.all([
-        this.engine.aiMove(g.board, g.players[AI].rack, g.bag.length, g.level),
+        this.dictLoading.then(() => this.engine.aiMove(g.board, g.players[AI].rack, g.bag.length, g.level)),
         this.fxDone.then(() => delay(500)),
       ]);
       if (g !== this.game) return; // nouvelle partie lancée entre-temps
@@ -667,6 +726,8 @@ export class App {
         <p class="muted">Affrontez quelqu’un à distance : créez une partie et envoyez-lui le lien.</p>
         <label class="field">Votre nom<input id="olName" maxlength="16" autocomplete="nickname" value="${name}" placeholder="Votre nom" /></label>
         ${arg ? '' : `<fieldset class="variants"><legend>Mode de jeu</legend>${this.variantRadios('olVariant', this.variantPref())}</fieldset>
+        <label class="field">Liste de mots<select id="olDict">${DICTS.map((d) =>
+          `<option value="${d.id}" ${(dictOf(lsGet(DICT_KEY)) ?? 'libre') === d.id ? 'selected' : ''}>${d.label} (${d.words} mots)</option>`).join('')}</select></label>
         <label class="field">Fantasy : thème (ses mots rapportent ×${THEME_MULT})<select id="olTheme">${this.themeOptions(this.themePref())}</select></label>
         <button class="btn primary wide" data-ol="create">Créer une partie</button><div class="sep"><span>ou</span></div>`}
         <form class="check" data-ol="join-form">
@@ -674,7 +735,7 @@ export class App {
           <button class="btn ${arg ? 'primary' : ''}">Rejoindre</button>
         </form>
         <p class="note">La partie est gardée sur le serveur : chacun peut fermer la page et revenir plus tard avec le lien.
-          Le dictionnaire du serveur (liste libre) fait foi.</p>
+          Le serveur vérifie chaque coup avec la liste choisie à la création.</p>
         <div class="row"><button type="button" class="btn" data-ol="close">Fermer</button></div>`;
     } else if (view === 'hosting') {
       const link = `${location.origin}${location.pathname}?partie=${arg}`;
@@ -738,7 +799,8 @@ export class App {
         const theme = themeOf(body.querySelector<HTMLSelectElement>('#olTheme')?.value);
         lsSet(VARIANT_KEY, v ?? 'normal');
         lsSet(THEME_KEY, theme ?? '');
-        this.createGame({ variant: v, theme });
+        const dict: DictId = dictOf(body.querySelector<HTMLSelectElement>('#olDict')?.value) ?? 'libre';
+        this.createGame({ variant: v, theme, dict });
       }
       else if (a === 'close' || a === 'cancel') cancel();
       else if (a === 'menu') this.lobby('menu');
@@ -898,6 +960,10 @@ export class App {
       }
       this.setStatus(`Mode ${info.label} pour la prochaine partie : ${info.help}`);
     });
+    $(this.root, '#dictSel').addEventListener('change', (e) => {
+      const v = (e.target as HTMLSelectElement).value;
+      this.setDict(v === 'ods' && this.odsName ? 'ods' : dictOf(v) ?? 'libre');
+    });
     this.el.fantasy.addEventListener('change', () => {
       const t = themeOf((this.el.fantasy as HTMLSelectElement).value);
       lsSet(THEME_KEY, t ?? '');
@@ -927,7 +993,7 @@ export class App {
       const out = $(this.el.dict, '#checkResult');
       const w = normalizeWord(input.value) ?? '';
       if (!/^[A-Z]{2,15}$/.test(w)) { out.textContent = 'De 2 à 15 lettres.'; out.className = 'bad'; return; }
-      const invalid = await this.engine.invalidWords([w]);
+      const invalid = await this.invalid([w]);
       out.textContent = invalid.length ? `${w} : refusé` : `${w} : valable`;
       out.className = invalid.length ? 'bad' : 'good';
     });
@@ -1312,6 +1378,7 @@ export class App {
     const prop = new Map((g.proposal?.move.placements ?? []).map((p) => [p.r * SIZE + p.c, p]));
     const themed = new Set(g.themeCells ?? []);
     this.renderFantasy(g.theme ?? null);
+    void this.useDict(this.gameDict());
     const cells = this.el.board.children;
     for (let r = 0; r < SIZE; r++) {
       for (let c = 0; c < SIZE; c++) {
@@ -1345,6 +1412,7 @@ export class App {
       <div class="player ${turn(this.opp)}"><span class="name">${solo ? 'Ordinateur' : esc(a.name)}${oppTag}</span><span class="pts" data-p="${this.opp}">${this.shownScore(this.opp)}</span></div>`;
     this.el.bag.innerHTML = `${g.bag.length} jeton${g.bag.length > 1 ? 's' : ''} dans le sac` +
       (g.variant ? ` · <span class="variant-tag v-${g.variant}">${variantLabel(g.variant)}</span>` : '') +
+      (g.dict && g.dict !== 'libre' ? ` · <span class="variant-tag dict-tag">${esc(g.dict === 'ods' ? 'ODS' : dictInfo(g.dict).label)}</span>` : '') +
       (g.theme ? ` · <span class="variant-tag theme-tag">${themeInfo(g.theme).icons[0]} ${themeInfo(g.theme).label}</span>` : '');
 
     this.el.history.innerHTML = g.history.length
@@ -1371,6 +1439,7 @@ export class App {
     this.el.levelWrap.hidden = !solo;
     $(this.root, '#variantWrap').hidden = !solo;
     $(this.root, '#fantasyWrap').hidden = !solo;
+    $(this.root, '#dictWrap').hidden = !solo;
     this.el.onlineBtn.hidden = !solo;
     this.el.newGame.textContent = solo ? 'Nouvelle partie' : 'Quitter';
     this.el.onlineInfo.hidden = solo;
@@ -1439,14 +1508,32 @@ export class App {
     this.el.musicBtn.title = this.sound.musicOn ? 'Couper la musique' : 'Musique de fond';
   }
 
+  /** Choix de la liste dans les options (avec le fichier importé, s'il y en a un). */
+  private renderDictSelect() {
+    const sel = $<HTMLSelectElement>(this.root, '#dictSel');
+    sel.innerHTML = DICTS.map((d) => `<option value="${d.id}">${d.label} (${d.words} mots)</option>`).join('') +
+      (this.odsName ? `<option value="ods">Mon fichier : ${esc(this.odsName)}</option>` : '');
+    sel.value = this.dictPref();
+  }
+
   private renderDict() {
-    const d = this.dict;
-    if (!d) return;
-    const head = $(this.el.dict, '#dictHead');
-    head.innerHTML = d.source === 'ods'
-      ? `<strong>${esc(d.name)}</strong><span>${d.count.toLocaleString('fr-FR')} mots · importé, stocké sur cet appareil</span>
-         <button type="button" class="link" data-revert>Revenir à la liste libre</button>`
-      : `<strong>Liste libre</strong><span>${d.count.toLocaleString('fr-FR')} mots · proche de l’ODS, sans être identique</span>`;
+    const head = this.el.dict?.querySelector<HTMLElement>('#dictHead');
+    if (!head) return;
+    const d = this.dict, loading = this.dictWanted !== null && d?.id !== this.dictWanted;
+    const info = d && d.id !== 'ods' ? dictInfo(d.id) : null;
+    head.innerHTML = (loading ? '<strong>Chargement de la liste…</strong>'
+      : !d ? `<strong class="bad">Liste indisponible</strong><span>${esc(this.dictError)}</span>`
+      : d.id === 'ods'
+        ? `<strong>${esc(d.label)}</strong><span>${d.count.toLocaleString('fr-FR')} mots · importé, stocké sur cet appareil</span>`
+        : `<strong>${esc(d.label)}</strong><span>${d.count.toLocaleString('fr-FR')} mots · ${esc(info!.help)}</span>`) +
+      `<span class="muted">${this.mode === 'online' ? 'Liste choisie par la personne qui a créé la partie ; le serveur vérifie chaque coup avec elle.'
+        : 'Changer de liste : Options.'}</span>` +
+      (this.odsName ? `<button type="button" class="link" data-revert>Supprimer mon fichier importé</button>` : '');
+    const credits = this.el.dict.querySelector<HTMLElement>('#dictCredits');
+    if (credits && !credits.childElementCount) {
+      credits.innerHTML = DICTS.map((x) => `<li><b>${x.label}</b> — ${x.words} mots, d’après
+        <a href="${x.url}" target="_blank" rel="noopener">${esc(x.source)}</a> (${x.licence})</li>`).join('');
+    }
   }
 
   private async updatePreview() {
@@ -1485,7 +1572,7 @@ export class App {
     // Modes challenge et hardcore : on ne sait pas si le mot est valide avant de le jouer.
     if (this.game.variant) return setPlayable(this.canAct());
     setPlayable(false);
-    const invalid = await this.engine.invalidWords(words);
+    const invalid = await this.invalid(words);
     if (token !== this.previewToken) return;
     if (invalid.length) {
       out.innerHTML = `<span class="words">${words.map((w) => (invalid.includes(w) ? `<s class="bad">${w}</s>` : label(w))).join(' · ')}</span>` +
@@ -1528,6 +1615,9 @@ const TEMPLATE = `
     <label class="level" id="variantWrap">Mode
       <select id="variant">${VARIANTS.map((v) => `<option value="${v.id}" title="${v.help}">${v.label}</option>`).join('')}</select>
     </label>
+    <label class="level" id="dictWrap">Liste de mots
+      <select id="dictSel"></select>
+    </label>
     <label class="level" id="fantasyWrap">Fantasy
       <select id="fantasy"><option value="">Aucun thème</option>${THEMES.map((t) => `<option value="${t.id}">${t.icons[0]} ${t.label}</option>`).join('')}</select>
     </label>
@@ -1555,6 +1645,7 @@ const TEMPLATE = `
     <summary><h2>Dictionnaire</h2></summary>
     <form id="dict" class="dict">
       <div id="dictHead" class="dict-head"></div>
+      <ul id="dictCredits" class="dict-credits"></ul>
       <label class="btn file">Importer mon fichier ODS…<input type="file" accept=".txt,.csv,text/plain" hidden /></label>
       <p class="note">L’ODS de la Fédération est protégé par le droit d’auteur et n’est donc pas fourni.
         Si vous en avez une copie, importez-la (un mot par ligne, texte brut). Le fichier reste dans votre navigateur et n’est envoyé nulle part.</p>
