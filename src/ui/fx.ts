@@ -45,6 +45,21 @@ export class Sound {
     return this.ctx;
   }
 
+  /** Contexte audio et sortie des effets, si les sons sont activés (pour les scènes : challenge…). */
+  stage(): { ctx: AudioContext; out: AudioNode } | null {
+    if (!this.sfxOn) return null;
+    const ctx = this.audio();
+    return ctx ? { ctx, out: this.sfxBus } : null;
+  }
+  /** Baisse la musique de fond pendant une scène. */
+  duck(on: boolean) {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime, g = this.musicBus.gain;
+    g.cancelScheduledValues(t);
+    g.setValueAtTime(g.value, t);
+    g.linearRampToValueAtTime(on ? 0.02 : 0.16, t + (on ? 0.3 : 1.2));
+  }
+
   setSfx(on: boolean) { this.sfxOn = on; lsSet('scrabble-fr-son', on ? '1' : '0'); }
   setMusic(on: boolean) {
     this.musicOn = on;
@@ -370,7 +385,7 @@ export class Fx {
     return new Promise((resolve) => setTimeout(() => { el.remove(); resolve(); }, this.stampMs));
   }
 
-  private confetti(b: DOMRect) {
+  confetti(b: DOMRect) {
     const colors = ['#d2493a', '#2f80c4', '#f2a5a0', '#9cc9ec', '#f1dcae', '#3fb394'];
     for (let i = 0; i < 40; i++) {
       const el = document.createElement('div');

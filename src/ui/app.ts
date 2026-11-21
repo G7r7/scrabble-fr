@@ -13,6 +13,7 @@ import { cleanName, type GameOptions, type ServerMsg } from '../net/protocol';
 import type { Level } from '../ai/player';
 import { Engine } from '../engine';
 import { Fx, Sound } from './fx';
+import { ChallengeScene } from './challenge';
 import { Notifier, bindInstall, notifSupported } from './notify';
 import { clearOds, loadOds, saveOds } from '../dict/store';
 import { normalizeWord } from '../dict/normalize.js';
@@ -71,6 +72,7 @@ export class App {
   // Effets : sons, animation du dernier coup, compteurs de points.
   private sound = new Sound();
   private fx = new Fx(this.sound);
+  private scene = new ChallengeScene(this.sound, this.fx);
   private seen = 0;                       // entrées d'historique déjà célébrées
   private shown: [number, number] | null = null; // scores affichés (pendant le défilement)
   private fxDone: Promise<void> = Promise.resolve();
@@ -382,12 +384,24 @@ export class App {
     const play = fresh.find((e) => e.kind === 'play');
     // Mode challenge / hardcore : grand tampon animé avant le reste.
     const judged = fresh.find((e) => e.challenged || (e.kind === 'invalid' && e.score < 0));
-    const stamp = !judged ? null
-      : judged.kind === 'invalid' && judged.score < 0 ? this.fx.stamp('REFUSÉ', `${judged.score} points`, 'bad')
-      : this.fx.stamp('CHALLENGE !', judged.kind === 'invalid' ? 'Réussi : mot refusé' : 'Raté : le mot est bon',
-        judged.kind === 'invalid' ? 'win' : 'fail');
+    let stamp: Promise<void> | null = null, wait = 0;
+    if (judged?.kind === 'invalid' && judged.score < 0) {
+      stamp = this.fx.stamp('REFUSÉ', `${judged.score} points`, 'bad');
+      wait = this.fx.stampMs;
+    } else if (judged) {
+      // Écran de challenge : suspense, puis réaction (variante choisie par le nombre de coups).
+      const refused = judged.kind === 'invalid';
+      const name = (p: number) => (this.mode === 'solo' ? (p === HUMAN ? 'Vous' : 'L’ordinateur') : g.players[p].name);
+      const challenger = refused ? 1 - judged.player : (fresh.find((e) => e.kind === 'challenge')?.player ?? 1 - judged.player);
+      const words = refused ? judged.text.replace(/^[^:]*:\s*/, '').replace(/\s*—.*$/, '').split(/,\s*/)
+        : (g.lastWords ?? []).map((w) => w.word);
+      const detail = refused
+        ? (judged.player === this.me ? 'Challenge réussi contre vous : votre coup est annulé.' : `Challenge réussi : le coup de ${name(judged.player)} est annulé.`)
+        : (challenger === this.me ? 'Challenge raté : vous perdez votre tour.' : `Challenge raté : ${name(challenger)} perd son tour.`);
+      stamp = this.scene.play(refused ? 'invalid' : 'valid', words, detail, g.history.length);
+      wait = this.scene.duration;
+    }
     const before = stamp ?? Promise.resolve();
-    let wait = stamp ? this.fx.stampMs : 0;
     if (play && g.lastWords?.length) {
       const words = g.lastWords, cells = g.lastMove;
       wait += this.fx.duration(cells.length, words.length);
