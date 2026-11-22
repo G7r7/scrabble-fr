@@ -239,7 +239,8 @@ html, body { height: 100%; overflow: hidden; overscroll-behavior: none; }
 /* ---------- Plateau ---------- */
 .board {
   container-type: inline-size;
-  display: grid; grid-template-columns: repeat(15, 1fr); gap: 2px;
+  /* Lignes et colonnes strictement égales : aucun contenu (icône du thème, lettre) ne peut étirer une case. */
+  display: grid; grid-template-columns: repeat(15, minmax(0, 1fr)); grid-template-rows: repeat(15, minmax(0, 1fr)); gap: 2px;
   background: var(--board); padding: 4px; border-radius: var(--radius);
   aspect-ratio: 1; width: calc(min(100cqw, 100cqh) * var(--zoom, 1)); touch-action: none;
   margin: auto; flex: none;
@@ -248,7 +249,7 @@ html, body { height: 100%; overflow: hidden; overscroll-behavior: none; }
 }
 .cell {
   position: relative; background: var(--cell); border-radius: 3px;
-  display: grid; place-items: center; overflow: hidden; min-width: 0;
+  display: grid; place-items: center; overflow: hidden; min-width: 0; min-height: 0;
 }
 .cell .label {
   font: 600 1.45cqi/1 Inter, sans-serif; text-transform: uppercase; text-align: center;
@@ -581,7 +582,7 @@ input.invalid { border-color: var(--bad); outline: 1px solid var(--bad); }
 .app[data-fantasy] :is(.b-MT, .b-MD, .b-LT, .b-LD) {
   background-image: linear-gradient(120deg, transparent 30%, rgba(255, 255, 255, 0.45) 50%, transparent 70%);
 }
-.app[data-fantasy] .star .label { font-size: 5.5cqi; }
+.app[data-fantasy] .star .label { font-size: 4.2cqi; line-height: 1; }
 
 
 /* Mots du thème : tuiles irisées. */
@@ -812,3 +813,20 @@ input.invalid { border-color: var(--bad); outline: 1px solid var(--bad); }
   color: var(--classique); border-color: color-mix(in srgb, var(--classique), transparent 45%);
   background: color-mix(in srgb, var(--classique), transparent 86%);
 }
+
+/* ---------- Mode compétition : pendules et choix des mots contestés ---------- */
+.setup:not([data-variant="tournoi"]) .only-tournoi { display: none; }
+.seg[style*="--n:4"] { grid-template-columns: repeat(2, 1fr); border-radius: 16px; }
+.variant-tag.v-tournoi { background: #0f172a; }
+.player .clock {
+  margin-left: auto; margin-right: 10px; padding: 2px 8px; border-radius: 6px;
+  font: 600 0.9rem/1.2 ui-monospace, 'SF Mono', Menlo, Consolas, monospace; font-variant-numeric: tabular-nums;
+  color: var(--muted); background: color-mix(in srgb, var(--ink), transparent 94%);
+}
+.player .clock.running { color: var(--ink); background: color-mix(in srgb, var(--accent), transparent 80%); }
+.player .clock.low { color: #fff; background: var(--bad); }
+.player .clock.low.running { animation: clock-blink 1s steps(2) infinite; }
+@keyframes clock-blink { 50% { opacity: 0.55; } }
+.app .actions .btn.word-pick { flex: 0 1 auto; font-weight: 600; }
+.btn.word-pick.on { background: color-mix(in srgb, var(--bad), transparent 82%); border-color: var(--bad); color: var(--ink); text-decoration: line-through; }
+@media (prefers-reduced-motion: reduce) { .player .clock.low.running { animation: none; } }

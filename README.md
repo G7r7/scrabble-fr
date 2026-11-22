@@ -17,13 +17,18 @@ Scrabble en français, à jouer dans le navigateur contre l'ordinateur.
     contiennent votre place ; l'appareil précédent est déconnecté. « Quitter » abandonne la partie pour de bon.
 - **Un seul bouton « Nouvelle partie »** : on y choisit l'adversaire (l'ordinateur et son niveau, ou quelqu'un en ligne),
   le mode, la liste de mots et le thème ; les réglages sont retenus pour la fois suivante.
-- **Trois modes de jeu** :
+- **Quatre modes de jeu** :
   - **Normal** : les mots sont vérifiés avant d'être joués ;
   - **Challenge** : aucune vérification avant de jouer. L'adversaire accepte le coup ou le conteste
     (« CHALLENGE ! ») : si le mot est refusé, le coup est annulé et son auteur perd son tour ;
     sinon le coup compte et c'est celui qui a contesté qui perd son tour ;
   - **Hardcore** : chaque coup est contrôlé d'office ; un mot refusé coûte 10 points, les lettres reviennent
     sur le chevalet et le tour est perdu.
+  - **Compétition** : règles de tournoi du [règlement international du Scrabble classique](https://fisf.net/documents/R%C3%A8glement_international_du%20Scrabble_classique.pdf)
+    (FISF/FFSc) : pendule de 15, 20, 25 ou 30 minutes par joueur ; on conteste un ou plusieurs mots du coup adverse —
+    mot refusé : l'auteur reprend ses lettres et passe ; mot admis : 5 points de pénalité par mot contesté à tort ;
+    le contestataire joue ensuite dans les deux cas. Temps épuisé : le joueur passe systématiquement et son adversaire
+    ne peut plus changer de lettres ; les deux épuisés : fin de partie. Refus de jeu après 3 « je passe » de chacun.
 - Animations (pose des lettres, décompte mot par mot, compteur de points) et sons synthétisés, volume général réglable.
 - **Musique de fond** : le bouton musique passe de « coupée » à **jazz** (swing léger), puis à **classique**, et sa couleur
   change avec le choix. La musique classique (`src/ui/cathedral.ts`) est composée à la volée pour accompagner la

@@ -7,7 +7,7 @@ import type { ThemeId } from '../game/themes';
 import type { DictId } from '../game/dicts';
 
 /** Options choisies par la personne qui crée la partie. */
-export interface GameOptions { variant: Variant | null; theme?: ThemeId | null; dict?: DictId | null }
+export interface GameOptions { variant: Variant | null; theme?: ThemeId | null; dict?: DictId | null; minutes?: number }
 
 export type ClientMsg =
   /** Envoyé à chaque connexion ; `options` n'est lu qu'à la création de la partie. */
@@ -20,7 +20,8 @@ export type ClientMsg =
 export type ServerMsg =
   /** Partie créée, personne ne l'a encore rejointe. */
   | { type: 'waiting' }
-  | { type: 'state'; state: GameState; you: 0 | 1 }
+  /** `now` : heure du serveur (ms), pour afficher la pendule du mode compétition. */
+  | { type: 'state'; state: GameState; you: 0 | 1; now: number }
   | { type: 'error'; message: string }
   /** L'adversaire a quitté la partie. */
   | { type: 'left' }

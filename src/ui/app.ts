@@ -7,6 +7,7 @@ import {
 } from '../game/game';
 import type { Action } from '../game/remote';
 import { DICTS, dictInfo, dictOf, type DictId, type GameDict } from '../game/dicts';
+import { CLOCK_MINUTES, DEFAULT_MINUTES, WRONG_CHALLENGE_PENALTY, clockUpdate, settleTime, timeLeft, timedOut } from '../game/clock';
 import { THEMES, THEME_MULT, applyTheme, themeInfo, themeOf, type ThemeId } from '../game/themes';
 import type { Placement } from '../game/types';
 import { CODE_TAKEN, GameLink, fetchSummaries, isCode, isToken, newCode, newToken, normalizeCode } from '../net/online';
@@ -54,7 +55,10 @@ function rememberGame(code: string, patch: Partial<MyGame>) {
   saveMyGames(l);
 }
 const forgetGame = (code: string) => saveMyGames(loadMyGames().filter((g) => g.code !== code));
-const variantOf = (v: unknown): Variant | null => (v === 'challenge' || v === 'hardcore' ? v : null);
+const variantOf = (v: unknown): Variant | null => (v === 'challenge' || v === 'hardcore' || v === 'tournoi' ? v : null);
+const MINUTES_KEY = 'scrabble-fr-pendule';
+/** Temps de pendule « m:ss ». */
+const fmtClock = (ms: number) => { const s = Math.ceil(ms / 1000); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
 /** Première lettre en minuscule (pour enchaîner « Nom : mot refusé… »). */
 const lcFirst = (t: string) => t.charAt(0).toLowerCase() + t.slice(1);
 const variantLabel = (v: Variant | null | undefined) => VARIANTS.find((x) => x.id === (v ?? 'normal'))!.label;
@@ -96,6 +100,13 @@ export class App {
   private waiting = false;
   /** Code de la partie en ligne affichée (pour savoir si un état reçu est celui d'une autre partie). */
   private gameCode: string | null = null;
+  /** Compétition : écart entre l'horloge du serveur et celle de l'appareil (ms). */
+  private clockOffset = 0;
+  /** Compétition : mots cochés pour une contestation (null = pas de choix en cours). */
+  private contestSel: Set<string> | null = null;
+  private lowTimeWarned = false;
+  /** Heure de référence de la pendule : celle du serveur en ligne, celle de l'appareil en solo. */
+  private serverNow() { return Date.now() + (this.mode === 'online' ? this.clockOffset : 0); }
   private oppConnected = false;
 
   // Effets : sons, animation du dernier coup, compteurs de points.
@@ -132,6 +143,9 @@ export class App {
     if (!lsGet(DICT_KEY) && ods) lsSet(DICT_KEY, 'ods');
     const saved = loadGame();
     this.game = saved && !saved.over ? saved : newGame(this.readLevel(), null, this.prefs());
+    // Partie de compétition reprise : la pendule ne tournait pas pendant que l'appli était fermée.
+    if (this.game.clock) this.game.clock.since = Date.now();
+    setInterval(() => this.tickClock(), 250);
     await this.useDict(this.gameDict());
     if (!this.dict) {
       loading.innerHTML = `<p>Impossible de charger le dictionnaire.</p><p class="muted">${esc(this.dictError)}</p>`;
@@ -269,10 +283,41 @@ export class App {
   private variantPref(): Variant | null { return variantOf(lsGet(VARIANT_KEY)); }
   private themePref(): ThemeId | null { return themeOf(lsGet(THEME_KEY)); }
   /** Options de la prochaine partie contre l'ordinateur. */
-  private prefs() { return { variant: this.variantPref(), theme: this.themePref(), dict: this.dictPref() }; }
+  private minutesPref(): number {
+    const m = Number(lsGet(MINUTES_KEY));
+    return (CLOCK_MINUTES as readonly number[]).includes(m) ? m : DEFAULT_MINUTES;
+  }
+  private prefs() { return { variant: this.variantPref(), theme: this.themePref(), dict: this.dictPref(), minutes: this.minutesPref() }; }
+
+  /** Compétition : met à jour l'affichage des pendules ; en solo, applique le temps épuisé. */
+  private tickClock() {
+    const g = this.game;
+    if (!g?.clock) return;
+    if (this.mode === 'solo' && !g.over && settleTime(g, Date.now())) {
+      this.setStatus(g.over ? 'Fin de partie : temps écoulé.' : 'Temps écoulé : le tour passe automatiquement.', true);
+      this.afterTurn();
+      return;
+    }
+    const now = this.serverNow();
+    for (const p of [0, 1] as const) {
+      const el = this.el.scores.querySelector<HTMLElement>(`.clock[data-p="${p}"]`);
+      if (!el) continue;
+      const left = timeLeft(g, p, now);
+      el.textContent = left > 0 ? fmtClock(left) : 'temps écoulé';
+      el.classList.toggle('running', !g.over && g.clock.runner === p);
+      el.classList.toggle('low', left < 60_000);
+    }
+    const mine = timeLeft(g, this.me, now);
+    if (!g.over && g.clock.runner === this.me && mine < 60_000 && mine > 0 && !this.lowTimeWarned) {
+      this.lowTimeWarned = true;
+      this.sound.turn();
+      this.setStatus('Plus qu’une minute à votre pendule !', true);
+    }
+    if (mine >= 60_000) this.lowTimeWarned = false;
+  }
 
   /** Nouvelle partie contre l'ordinateur (depuis la fenêtre « Nouvelle partie », ou « Rejouer » en fin de partie). */
-  private startSolo(level: Level, opts: { variant: Variant | null; theme: ThemeId | null; dict: GameDict }) {
+  private startSolo(level: Level, opts: { variant: Variant | null; theme: ThemeId | null; dict: GameDict; minutes?: number }) {
     const solo = this.mode === 'solo' ? this.game : loadGame();
     if (solo && !solo.over && solo.history.length > 0 && !confirm('Abandonner la partie en cours contre l’ordinateur ?')) return false;
     // Une partie en ligne en cours n'est pas quittée : elle reste dans « Mes parties en cours ».
@@ -282,7 +327,8 @@ export class App {
     this.resetBoardUi();
     const parts = [`niveau ${level}`, variantLabel(opts.variant) !== 'Normal' ? `mode ${variantLabel(opts.variant)}` : '',
       opts.dict === 'ods' ? 'votre fichier' : opts.dict !== 'libre' ? `liste ${dictInfo(opts.dict).label}` : '',
-      opts.theme ? `thème ${themeInfo(opts.theme).label}` : ''].filter(Boolean);
+      opts.theme ? `thème ${themeInfo(opts.theme).label}` : '',
+      opts.variant === 'tournoi' ? `pendule de ${opts.minutes ?? DEFAULT_MINUTES} min chacun` : ''].filter(Boolean);
     this.setStatus(`Nouvelle partie contre l’ordinateur : ${parts.join(', ')}.`);
     this.afterTurn();
     return true;
@@ -367,6 +413,7 @@ export class App {
 
   private canAct() {
     return !this.busy && !this.game.over && this.game.current === this.me && !this.game.proposal &&
+      !timedOut(this.game, this.me, this.serverNow()) &&
       (this.mode !== 'online' || !!this.link?.connected);
   }
 
@@ -397,7 +444,7 @@ export class App {
     // On retire les tuiles posées pour que syncRack n'en garde que les restantes.
     const placedIds = new Set(this.pending.map((p) => p.id));
     const commit = () => { this.pending = []; this.tiles = this.tiles.filter((t) => !placedIds.has(t.id)); };
-    if (g.variant === 'challenge') {
+    if (g.variant === 'challenge' || g.variant === 'tournoi') {
       commit();
       propose(g, move);
       this.setStatus('L’ordinateur examine votre coup…');
@@ -459,6 +506,7 @@ export class App {
   }
 
   private afterTurn() {
+    if (this.mode === 'solo' && this.game.clock) clockUpdate(this.game, Date.now());
     if (this.mode === 'solo') saveGame(this.game);
     this.syncRack();
     this.preparedNotice();
@@ -489,7 +537,13 @@ export class App {
     const odds = invalid.length
       ? { facile: 0.5, moyen: 0.8, difficile: 1 }[g.level]
       : { facile: 0.1, moyen: 0.04, difficile: 0 }[g.level];
-    if (Math.random() < odds) {
+    if (g.variant === 'tournoi' && Math.random() < odds) {
+      // Compétition : il conteste les mots qu'il croit faux (ou, parfois, un mot juste… et paie 5 points).
+      const contested = invalid.length ? invalid : [p.move.words[0].word];
+      challenge(g, invalid, contested);
+      this.setStatus(invalid.length ? `L’ordinateur conteste ${invalid.join(', ')}… à raison : vos lettres reviennent, vous passez.`
+        : `L’ordinateur conteste ${contested[0]} à tort : vous marquez ${this.lastPlayScore()} points et il perd ${WRONG_CHALLENGE_PENALTY} points.`, !!invalid.length);
+    } else if (g.variant !== 'tournoi' && Math.random() < odds) {
       challenge(g, invalid);
       this.setStatus(invalid.length ? 'L’ordinateur conteste… et il a raison ! Vous perdez votre tour.'
         : `L’ordinateur conteste… à tort ! Vous marquez ${this.lastPlayScore()} points et il perd son tour.`, !!invalid.length);
@@ -501,9 +555,10 @@ export class App {
   }
 
   /** Mode challenge : votre décision sur le coup de l'adversaire. */
-  private async respond(kind: 'accept' | 'challenge') {
+  private async respond(kind: 'accept' | 'challenge', words?: string[]) {
     if (!this.canRespond()) return;
-    if (this.mode === 'online') return this.sendAction({ type: kind });
+    this.contestSel = null;
+    if (this.mode === 'online') return this.sendAction(kind === 'challenge' && words ? { type: 'challenge', words } : { type: kind });
     const g = this.game;
     const p = g.proposal!;
     if (kind === 'accept') {
@@ -512,12 +567,20 @@ export class App {
       return this.afterTurn();
     }
     this.busy = true;
-    const invalid = await this.invalid(p.move.words.map((w) => w.word));
+    const contested = words ?? p.move.words.map((w) => w.word);
+    const invalid = await this.invalid(contested);
     this.busy = false;
     if (g !== this.game || g.proposal !== p) return;
-    challenge(g, invalid);
-    this.setStatus(invalid.length ? 'Challenge réussi ! L’ordinateur perd son tour.'
-      : `Challenge raté : le coup est valide, vous perdez votre tour.`, !invalid.length);
+    challenge(g, invalid, contested);
+    const wrong = contested.length - invalid.length;
+    if (g.variant === 'tournoi') {
+      this.setStatus(invalid.length
+        ? `Contestation réussie : ${invalid.join(', ')} refusé — l’ordinateur reprend ses lettres.${wrong ? ` Mais −${wrong * WRONG_CHALLENGE_PENALTY} points pour les mots contestés à tort.` : ''} À vous.`
+        : `Contestation à tort : −${wrong * WRONG_CHALLENGE_PENALTY} points. À vous de jouer.`, !invalid.length);
+    } else {
+      this.setStatus(invalid.length ? 'Challenge réussi ! L’ordinateur perd son tour.'
+        : `Challenge raté : le coup est valide, vous perdez votre tour.`, !invalid.length);
+    }
     this.afterTurn();
   }
 
@@ -540,7 +603,12 @@ export class App {
       const challenger = refused ? 1 - judged.player : (fresh.find((e) => e.kind === 'challenge')?.player ?? 1 - judged.player);
       const words = refused ? judged.text.replace(/^[^:]*:\s*/, '').replace(/\s*—.*$/, '').split(/,\s*/)
         : (g.lastWords ?? []).map((w) => w.word);
-      const detail = refused
+      const penalty = -(fresh.find((e) => e.kind === 'challenge')?.score ?? 0);
+      const detail = g.variant === 'tournoi'
+        ? (refused
+          ? `${judged.player === this.me ? 'Votre coup est annulé' : `Le coup de ${name(judged.player)} est annulé`}${penalty ? ` · ${challenger === this.me ? 'vous' : name(challenger)} : −${penalty} pts pour un mot contesté à tort` : ''}.`
+          : `Contestation à tort : ${challenger === this.me ? 'vous perdez' : `${name(challenger)} perd`} ${penalty} points.`)
+        : refused
         ? (judged.player === this.me ? 'Challenge réussi contre vous : votre coup est annulé.' : `Challenge réussi : le coup de ${name(judged.player)} est annulé.`)
         : (challenger === this.me ? 'Challenge raté : vous perdez votre tour.' : `Challenge raté : ${name(challenger)} perd son tour.`);
       stamp = this.scene.play(refused ? 'invalid' : 'valid', words, detail, g.history.length);
@@ -579,7 +647,8 @@ export class App {
     const what = theirs.kind === 'play' ? `${who} joue ${theirs.text} pour ${theirs.score} points.`
       : theirs.kind === 'exchange' ? `${who} échange des lettres.`
       : theirs.kind === 'invalid' ? `${who} : ${lcFirst(theirs.text)}.`
-      : theirs.kind === 'challenge' ? `${who} a contesté à tort et perd son tour.` : `${who} passe son tour.`;
+      : theirs.kind === 'challenge' ? (g.variant === 'tournoi' ? `${who} a contesté à tort (${theirs.score} points).` : `${who} a contesté à tort et perd son tour.`)
+      : `${who} passe son tour.`;
     void this.notifier.show('À vous de jouer !', what, 'tour');
   }
 
@@ -606,7 +675,7 @@ export class App {
         this.fxDone.then(() => delay(500)),
       ]);
       if (g !== this.game) return; // nouvelle partie lancée entre-temps
-      if (d.kind === 'play' && g.variant === 'challenge') {
+      if (d.kind === 'play' && (g.variant === 'challenge' || g.variant === 'tournoi')) {
         propose(g, d.move);
         this.setStatus(`L’ordinateur propose ${d.move.words.map((w) => w.word).join(', ')} pour ${d.move.score} points : acceptez ou contestez !`);
       } else if (d.kind === 'play') {
@@ -649,11 +718,13 @@ export class App {
     if (e.kind === 'play') return mine ? `Vous marquez ${e.score} points.` : `${name} joue ${e.text} pour ${e.score} points.`;
     if (e.kind === 'exchange') return mine ? 'Vous échangez des lettres.' : `${name} échange des lettres.`;
     if (e.kind === 'pass') return mine ? 'Vous passez votre tour.' : `${name} passe son tour.`;
+    const won = this.game.variant === 'tournoi' ? 'Contestation réussie' : 'Challenge réussi';
     if (e.kind === 'invalid') return e.challenged
-      ? (mine ? `Challenge réussi contre vous. ${e.text}.` : `Challenge réussi ! ${name} : ${lcFirst(e.text)}.`)
+      ? (mine ? `${won} contre vous. ${e.text}.` : `${won} ! ${name} : ${lcFirst(e.text)}.`)
       : (mine ? `${e.text}.` : `${name} : ${lcFirst(e.text)}.`);
-    if (e.kind === 'challenge') return mine ? 'Challenge raté : le mot était bon, vous perdez votre tour.'
-      : `${name} a contesté à tort et perd son tour.`;
+    if (e.kind === 'challenge') return this.game.variant === 'tournoi'
+      ? (mine ? `Contestation à tort : ${-e.score} points de pénalité.` : `${name} a contesté à tort : ${-e.score} points de pénalité.`)
+      : mine ? 'Challenge raté : le mot était bon, vous perdez votre tour.' : `${name} a contesté à tort et perd son tour.`;
     return '';
   }
 
@@ -739,6 +810,7 @@ export class App {
       const fresh = !prev || m.state.history.length < prev.history.length || (prev.over && !m.state.over);
       const opp = m.state.players[m.you === 0 ? 1 : 0].name;
       this.gameCode = this.link.code;
+      if (typeof m.now === 'number') this.clockOffset = m.now - Date.now();
       const st = m.state, mine = st.players[m.you], theirs = st.players[m.you === 0 ? 1 : 0];
       if (st.over) forgetGame(this.link.code);
       else rememberGame(this.link.code, {
@@ -923,7 +995,7 @@ export class App {
       body.innerHTML = `
         <h2>Nouvelle partie</h2>
         <section id="olGames" class="my-games" hidden></section>
-        <section class="setup" data-opp="${opp}" aria-label="Nouvelle partie">
+        <section class="setup" data-opp="${opp}" data-variant="${variant}" aria-label="Nouvelle partie">
           <div class="setup-row"><span class="setup-label">Contre</span>${seg('olOpp',
             [{ id: 'solo', label: 'L’ordinateur' }, { id: 'online', label: 'En ligne' }], opp, 'Adversaire')}</div>
           <div class="setup-row only-solo"><span class="setup-label">Niveau</span>${seg('olLevel',
@@ -932,6 +1004,8 @@ export class App {
           <div class="setup-row"><span class="setup-label">Mode</span>${seg('olVariant',
             VARIANTS.map((v) => ({ id: v.id, label: v.label, cls: `v-${v.id}` })), variant, 'Mode de jeu')}</div>
           <p class="setup-help" id="olVariantHelp">${VARIANTS.find((v) => v.id === variant)!.help}</p>
+          <div class="setup-row only-tournoi"><span class="setup-label">Pendule</span>${seg('olMinutes',
+            CLOCK_MINUTES.map((m) => ({ id: String(m), label: `${m} min` })), String(this.minutesPref()), 'Temps par joueur')}</div>
           <label class="setup-row"><span class="setup-label">Liste</span><select id="olDict">${DICTS.map((d) =>
             `<option value="${d.id}" ${dict === d.id ? 'selected' : ''}>${d.label} (${d.words} mots)</option>`).join('')}${this.odsName
             ? `<option value="ods" ${dict === 'ods' ? 'selected' : ''} ${opp === 'online' ? 'disabled' : ''}>Mon fichier : ${esc(this.odsName)}</option>` : ''}</select></label>
@@ -1021,6 +1095,8 @@ export class App {
         const theme = themeOf(body.querySelector<HTMLSelectElement>('#olTheme')?.value);
         const dictVal = body.querySelector<HTMLSelectElement>('#olDict')?.value;
         const level = (LEVELS as string[]).includes(pick('olLevel') ?? '') ? pick('olLevel') as Level : 'moyen';
+        const minutes = (CLOCK_MINUTES as readonly number[]).includes(Number(pick('olMinutes'))) ? Number(pick('olMinutes')) : DEFAULT_MINUTES;
+        lsSet(MINUTES_KEY, String(minutes));
         // On retient ces réglages pour la prochaine fois.
         lsSet(OPP_KEY, online ? 'online' : 'solo');
         lsSet(VARIANT_KEY, variant ?? 'normal');
@@ -1029,13 +1105,13 @@ export class App {
           const dict: GameDict = dictVal === 'ods' && this.odsName ? 'ods' : dictOf(dictVal) ?? 'libre';
           lsSet(DICT_KEY, dict);
           lsSet('scrabble-fr-niveau', level);
-          if (this.startSolo(level, { variant, theme, dict })) this.closeLobby();
+          if (this.startSolo(level, { variant, theme, dict, minutes })) this.closeLobby();
           return;
         }
         if (!saveName()) return;
         const dict: DictId = dictOf(dictVal) ?? 'libre';
         lsSet(DICT_KEY, dict);
-        this.createGame({ variant, theme, dict });
+        this.createGame({ variant, theme, dict, minutes });
       }
       else if (a === 'close' || a === 'cancel') cancel();
       else if (a === 'menu') this.lobby('menu');
@@ -1075,6 +1151,7 @@ export class App {
       const t = e.target as HTMLInputElement;
       const help = body.querySelector('#olVariantHelp');
       if (t.name === 'olVariant' && help) help.textContent = VARIANTS.find((v) => v.id === t.value)?.help ?? '';
+      if (t.name === 'olVariant') { const st = body.querySelector<HTMLElement>('.setup'); if (st) st.dataset.variant = t.value; }
       if (t.name === 'olOpp') {
         const setup = body.querySelector<HTMLElement>('.setup');
         if (setup) setup.dataset.opp = t.value;
@@ -1169,6 +1246,12 @@ export class App {
   private bindEvents() {
     const actions = this.el.actions;
     actions.addEventListener('click', (e) => {
+      const pickBtn = (e.target as HTMLElement).closest<HTMLElement>('[data-pick]');
+      if (pickBtn && this.contestSel) {
+        const w = pickBtn.dataset.pick!;
+        if (this.contestSel.has(w)) this.contestSel.delete(w); else this.contestSel.add(w);
+        return this.render();
+      }
       const a = (e.target as HTMLElement).closest<HTMLElement>('[data-action]')?.dataset.action;
       if (a === 'play') void this.play();
       else if (a === 'recall') this.withFlip(() => { this.recallAll(); this.render(); });
@@ -1176,7 +1259,14 @@ export class App {
       else if (a === 'exchange') this.toggleExchange();
       else if (a === 'confirm-exchange') this.confirmExchange();
       else if (a === 'pass') this.doPass();
-      else if (a === 'accept' || a === 'challenge') void this.respond(a);
+      else if (a === 'accept') void this.respond('accept');
+      else if (a === 'challenge') {
+        // Compétition : on choisit les mots contestés (5 points par mot contesté à tort).
+        const words = this.game.proposal?.move.words.map((w) => w.word) ?? [];
+        if (this.game.variant === 'tournoi' && words.length > 1) { this.contestSel = new Set(words); this.render(); }
+        else void this.respond('challenge', this.game.variant === 'tournoi' ? words : undefined);
+      } else if (a === 'contest' && this.contestSel?.size) void this.respond('challenge', [...this.contestSel]);
+      else if (a === 'contest-cancel') { this.contestSel = null; this.render(); }
     });
     this.el.newGame.addEventListener('click', () => this.lobby('menu'));
     this.el.quitBtn.addEventListener('click', () => this.quitOnline());
@@ -1184,7 +1274,8 @@ export class App {
     $(this.root, '#endNew').addEventListener('click', () => {
       if (this.mode !== 'solo') return this.rematch();
       const g = this.game;
-      this.startSolo(g.level, { variant: g.variant ?? null, theme: g.theme ?? null, dict: g.dict ?? 'libre' });
+      this.startSolo(g.level, { variant: g.variant ?? null, theme: g.theme ?? null, dict: g.dict ?? 'libre',
+        minutes: g.clock ? g.clock.limit / 60_000 : undefined });
     });
     $(this.root, '#transferBtn').addEventListener('click', () => this.lobby('transfer'));
     $(this.root, '#gamesBar').addEventListener('click', (e) => {
@@ -1686,6 +1777,7 @@ export class App {
   private render() {
     const g = this.game;
     if (!g) return;
+    if (!g.proposal || g.proposal.player === this.me) this.contestSel = null;
     const last = new Set(g.lastMove.map(([r, c]) => r * SIZE + c));
     const pend = new Map(this.pending.map((p) => [p.r * SIZE + p.c, p]));
     const prop = new Map((g.proposal?.move.placements ?? []).map((p) => [p.r * SIZE + p.c, p]));
@@ -1715,14 +1807,18 @@ export class App {
 
     const solo = this.mode === 'solo';
     const h = g.players[this.me], a = g.players[this.opp];
-    const turn = (i: number) => (!g.over && g.current === i ? 'turn' : '');
+    // Joueur qui doit agir : celui au trait, ou, quand un coup attend d'être jugé, son adversaire.
+    const actor = g.proposal ? (g.proposal.player === 0 ? 1 : 0) : g.current;
+    const turn = (i: number) => (!g.over && actor === i ? 'turn' : '');
+    const clock = (p: 0 | 1) => (g.clock ? `<span class="clock" data-p="${p}" aria-label="Pendule"></span>` : '');
     const oppTag = solo
       ? (this.busy ? ' <i class="thinking">réfléchit</i>' : '')
       : !this.oppConnected ? ' <i class="off">hors ligne</i>'
-      : !g.over && g.current === this.opp ? ' <i class="thinking">joue</i>' : '';
+      : !g.over && actor === this.opp ? ` <i class="thinking">${g.proposal ? 'décide' : 'joue'}</i>` : '';
     this.el.scores.innerHTML = `
-      <div class="player ${turn(this.me)}"><span class="name">${solo ? 'Vous' : `${esc(h.name)} <i class="off">(vous)</i>`}</span><span class="pts" data-p="${this.me}">${this.shownScore(this.me)}</span></div>
-      <div class="player ${turn(this.opp)}"><span class="name">${solo ? 'Ordinateur' : esc(a.name)}${oppTag}</span><span class="pts" data-p="${this.opp}">${this.shownScore(this.opp)}</span></div>`;
+      <div class="player ${turn(this.me)}"><span class="name">${solo ? 'Vous' : `${esc(h.name)} <i class="off">(vous)</i>`}</span>${clock(this.me)}<span class="pts" data-p="${this.me}">${this.shownScore(this.me)}</span></div>
+      <div class="player ${turn(this.opp)}"><span class="name">${solo ? 'Ordinateur' : esc(a.name)}${oppTag}</span>${clock(this.opp)}<span class="pts" data-p="${this.opp}">${this.shownScore(this.opp)}</span></div>`;
+    this.tickClock();
     this.el.bag.innerHTML = `${g.bag.length} jeton${g.bag.length > 1 ? 's' : ''} dans le sac` +
       (g.variant ? ` · <span class="variant-tag v-${g.variant}">${variantLabel(g.variant)}</span>` : '') +
       (g.dict && g.dict !== 'libre' ? ` · <span class="variant-tag dict-tag">${esc(g.dict === 'ods' ? 'ODS' : dictInfo(g.dict).label)}</span>` : '') +
@@ -1736,7 +1832,13 @@ export class App {
       : '<li class="empty">Aucun coup pour l’instant.</li>';
 
     const can = this.canAct();
-    this.el.actions.innerHTML = g.proposal && g.proposal.player !== this.me && !g.over
+    const oppOut = !!g.clock && timedOut(g, this.opp, this.serverNow());
+    const sel = this.contestSel;
+    this.el.actions.innerHTML = g.proposal && g.proposal.player !== this.me && !g.over && sel
+      ? `${g.proposal.move.words.map((w) => `<button class="btn word-pick ${sel.has(w.word) ? 'on' : ''}" data-pick="${w.word}" aria-pressed="${sel.has(w.word)}">${w.word}</button>`).join('')}
+         <button class="btn challenge-btn" data-action="contest" ${sel.size && this.canRespond() ? '' : 'disabled'}>Contester ${sel.size || ''}</button>
+         <button class="btn" data-action="contest-cancel">Annuler</button>`
+      : g.proposal && g.proposal.player !== this.me && !g.over
       ? `<button class="btn" data-action="accept" ${this.canRespond() ? '' : 'disabled'}>Accepter</button>
          <button class="btn challenge-btn" data-action="challenge" ${this.canRespond() ? '' : 'disabled'} aria-label="Challenge !">${
            [...'CHALLENGE!'].map((ch, i) => `<span style="--i:${i}">${ch}</span>`).join('')}</button>`
@@ -1746,7 +1848,7 @@ export class App {
       : `<button class="btn primary" data-action="play" ${can && this.pending.length ? '' : 'disabled'}>Jouer</button>
          <button class="btn" data-action="recall" ${this.pending.length ? '' : 'disabled'}>Reprendre</button>
          <button class="btn" data-action="shuffle">Mélanger</button>
-         <button class="btn" data-action="exchange" ${can && g.bag.length >= RACK_SIZE ? '' : 'disabled'}>Échanger</button>
+         <button class="btn" data-action="exchange" ${can && g.bag.length >= RACK_SIZE && !oppOut ? '' : 'disabled'}>Échanger</button>
          <button class="btn" data-action="pass" ${can ? '' : 'disabled'}>Passer</button>`;
 
     $(this.root, '#transferBtn').hidden = solo || !this.link;

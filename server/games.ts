@@ -5,6 +5,7 @@ import { applyAction, parseAction, viewFor } from '../src/game/remote';
 import { CLOSE, cleanName, type GameSummary, type ServerMsg } from '../src/net/protocol';
 import { themeOf, type ThemeId } from '../src/game/themes';
 import { DEFAULT_DICT, dictOf, type DictId } from '../src/game/dicts';
+import { CLOCK_MINUTES, DEFAULT_MINUTES, clockUpdate, nextTimeout, settleTime } from '../src/game/clock';
 
 export type SeatNo = 0 | 1;
 export interface Seat { token: string; name: string; left: boolean }
@@ -15,6 +16,8 @@ export interface Room {
   theme?: ThemeId | null;
   /** Liste de mots qui arbitre la partie (absente = liste libre). */
   dict?: DictId | null;
+  /** Mode compétition : minutes par joueur. */
+  minutes?: number;
   state: GameState | null;
   /** Dernière activité (création, arrivée d'un joueur, coup joué), en ms. */
   updated: number;
@@ -78,7 +81,9 @@ export class Games {
       me.left = false;
       if (seat === 0 && !room.state && m.options && typeof m.options === 'object') {
         const v = (m.options as Record<string, unknown>).variant;
-        room.variant = v === 'challenge' || v === 'hardcore' ? v : null;
+        room.variant = v === 'challenge' || v === 'hardcore' || v === 'tournoi' ? v : null;
+        const min = (m.options as Record<string, unknown>).minutes;
+        room.minutes = (CLOCK_MINUTES as readonly unknown[]).includes(min) ? min as number : DEFAULT_MINUTES;
         room.theme = themeOf((m.options as Record<string, unknown>).theme);
         room.dict = dictOf((m.options as Record<string, unknown>).dict);
       }
@@ -95,10 +100,15 @@ export class Games {
       if (!room.state) return this.io.send(room, seat, { type: 'error', message: 'La partie n’a pas commencé.' });
       const action = parseAction(m.action);
       if (!action) return this.io.send(room, seat, { type: 'error', message: 'Coup mal formé.' });
-      const err = await applyAction(room.state, seat, action, async (w) => this.io.invalidWords(w, room.dict ?? DEFAULT_DICT));
+      const st = room.state;
+      // Compétition : un joueur dont le temps vient de s'épuiser a déjà passé son tour.
+      if (st.clock && settleTime(st, this.now())) { this.io.changed(); this.broadcast(room); }
+      const err = await applyAction(st, seat, action, async (w) => this.io.invalidWords(w, room.dict ?? DEFAULT_DICT));
       if (err) return this.io.send(room, seat, { type: 'error', message: err });
+      if (st.clock) { clockUpdate(st, this.now()); settleTime(st, this.now()); }
       room.updated = this.now();
       this.io.changed();
+      this.arm(room);
       return this.broadcast(room);
     }
     if (m.type === 'rematch') {
@@ -116,14 +126,35 @@ export class Games {
 
   private start(room: Room) {
     const [a, b] = room.seats;
-    room.state = newGame('moyen', { names: [a.name, b!.name] }, { variant: room.variant, theme: room.theme, dict: room.dict });
+    room.state = newGame('moyen', { names: [a.name, b!.name] }, {
+      variant: room.variant, theme: room.theme, dict: room.dict, minutes: room.minutes ?? DEFAULT_MINUTES, now: this.now(),
+    });
     room.updated = this.now();
     this.io.changed();
+    this.arm(room);
     this.broadcast(room);
   }
 
+  /** Compétition : programme le « temps écoulé » du joueur dont la pendule tourne. */
+  private timers = new Map<string, ReturnType<typeof setTimeout>>();
+  private arm(room: Room) {
+    clearTimeout(this.timers.get(room.code));
+    this.timers.delete(room.code);
+    const st = room.state;
+    const left = st ? nextTimeout(st, this.now()) : null;
+    if (left === null || !Number.isFinite(left)) return;
+    const t = setTimeout(() => {
+      this.timers.delete(room.code);
+      if (this.rooms.get(room.code) !== room || room.state !== st) return;
+      if (settleTime(st!, this.now())) { room.updated = this.now(); this.io.changed(); this.broadcast(room); }
+      this.arm(room);
+    }, left + 50);
+    (t as { unref?: () => void }).unref?.();
+    this.timers.set(room.code, t);
+  }
+
   private sendState(room: Room, seat: SeatNo) {
-    if (room.state) this.io.send(room, seat, { type: 'state', state: viewFor(room.state, seat), you: seat });
+    if (room.state) this.io.send(room, seat, { type: 'state', state: viewFor(room.state, seat), you: seat, now: this.now() });
   }
   private broadcast(room: Room) { this.sendState(room, 0); this.sendState(room, 1); }
 
@@ -156,6 +187,13 @@ export class Games {
 
   toJSON() { return [...this.rooms.values()]; }
   load(rooms: Room[]) {
-    for (const r of rooms) if (r && isCode(r.code) && r.seats?.[0]) this.rooms.set(r.code, r);
+    const now = this.now();
+    for (const r of rooms) {
+      if (!r || !isCode(r.code) || !r.seats?.[0]) continue;
+      // Les pendules ne tournent pas pendant que le serveur est arrêté.
+      if (r.state?.clock) r.state.clock.since = now;
+      this.rooms.set(r.code, r);
+      this.arm(r);
+    }
   }
 }
