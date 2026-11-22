@@ -2,7 +2,7 @@ import { BLANK, BONUS, CENTER, RACK_SIZE, SIZE, letterValue } from '../game/cons
 import { evaluatePlacement } from '../game/rules';
 import { shuffle } from '../game/bag';
 import {
-  AI, HARDCORE_PENALTY, HUMAN, type PlayedWord, VARIANTS, accept, challenge, exchange, loadGame, newGame, pass, playMove, propose, refuse,
+  AI, HARDCORE_PENALTY, HUMAN, boardWords, type PlayedWord, VARIANTS, accept, challenge, exchange, loadGame, newGame, pass, playMove, propose, refuse,
   saveGame, winnerText, type GameState, type HistoryEntry, type Variant,
 } from '../game/game';
 import type { Action } from '../game/remote';
@@ -748,10 +748,26 @@ export class App {
   /** Mots acceptés sans contestation mais absents de la liste de la partie. */
   private async findEvil(): Promise<PlayedWord[]> {
     const g = this.game;
-    if (!g.played?.length) return [];
-    const invalid = new Set(await this.invalid([...new Set(g.played.map((w) => w.word))]));
+    if (g.variant !== 'challenge' && g.variant !== 'tournoi') return [];
+    const played = g.played ?? [];
+    // Partie commencée avant que les mots soient retenus : on relit le plateau pour les mots qui manquent,
+    // et l'historique dit qui les a joués (et pour combien de points, au total du coup).
+    const key = (cells: [number, number][]) => cells.map(([r, c]) => r * SIZE + c).join(',');
+    const known = new Set(played.map((w) => key(w.cells)));
+    const extra: PlayedWord[] = boardWords(g.board).filter((w) => !known.has(key(w.cells))).map((w) => {
+      let player: 0 | 1 = 0, moveScore = 0;
+      for (const e of g.history) {
+        if (e.kind !== 'play') continue;
+        const words = e.text.replace(/ — Scrabble !$/, '').split(', ').map((x) => x.replace(/ ✦$/, ''));
+        if (words.includes(w.word)) { player = e.player as 0 | 1; moveScore = e.score; }
+      }
+      return { ...w, score: NaN, player, moveScore };
+    });
+    const all = [...played, ...extra];
+    if (!all.length) return [];
+    const invalid = new Set(await this.invalid([...new Set(all.map((w) => w.word))]));
     if (g !== this.game) return [];
-    return g.played.filter((w) => invalid.has(w.word));
+    return all.filter((w) => invalid.has(w.word));
   }
 
   /** Démasque les mots maléfiques un à un sur le plateau. */
@@ -773,7 +789,7 @@ export class App {
       this.sound.evil();
       const [lr, lc] = w.cells[w.cells.length - 1];
       const last = (this.el.board.children[lr * SIZE + lc] as HTMLElement)?.getBoundingClientRect();
-      if (last) this.fx.float(`☠ ${w.word} · non valable · +${w.score} pts`, last, 'evil');
+      if (last) this.fx.float(`☠ ${w.word} · non valable${Number.isNaN(w.score) ? '' : ` · +${w.score} pts`}`, last, 'evil');
       await delay(step);
       tiles.forEach((t) => { t.classList.remove('evil-reveal'); t.style.animationDelay = ''; });
     }
@@ -791,10 +807,12 @@ export class App {
     const g = this.game;
     if (evil.length) {
       const who = (p: number) => (p === this.me ? 'Vous' : this.mode === 'solo' ? 'L’ordinateur' : esc(g.players[p].name));
-      const tot = [0, 1].map((p) => evil.filter((w) => w.player === p).reduce((a, w) => a + w.score, 0));
+      const tot = [0, 1].map((p) => evil.filter((w) => w.player === p && !Number.isNaN(w.score)).reduce((a, w) => a + w.score, 0));
       box.innerHTML = `<h3>☠ Mots maléfiques</h3><ul>${evil.map((w) =>
-        `<li><b>${w.word}</b> <span class="muted">— ${who(w.player)}</span><span class="pts">+${w.score}</span></li>`).join('')}</ul>
-        <p class="muted">Points rapportés par des mots non valables : ${[this.me, this.opp].map((p) => `${p === this.me ? 'vous' : who(p)} ${tot[p]}`).join(' · ')}.
+        `<li><b>${w.word}</b> <span class="muted">— ${who(w.player)}</span><span class="pts">${Number.isNaN(w.score)
+          ? `<small>coup de ${w.moveScore} pts</small>` : `+${w.score}`}</span></li>`).join('')}</ul>
+        <p class="muted">${evil.some((w) => Number.isNaN(w.score)) ? ''
+          : `Points rapportés par des mots non valables : ${[this.me, this.opp].map((p) => `${p === this.me ? 'vous' : who(p)} ${tot[p]}`).join(' · ')}. `}
         Non contestés, ils restent acquis.</p>`;
       box.hidden = false;
     } else if (g.played) {

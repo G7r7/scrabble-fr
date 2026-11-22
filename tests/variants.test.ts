@@ -96,3 +96,13 @@ describe('mots restés sur le plateau (révélés en fin de partie)', () => {
     expect(n.played).toBeUndefined();
   });
 });
+
+describe('relecture du plateau', () => {
+  test('boardWords trouve les suites de deux lettres ou plus, en ligne et en colonne', async () => {
+    const { boardWords, newGame: ng } = await import('../src/game/game');
+    const g = ng('moyen');
+    for (const [i, l] of [...'CHAT'].entries()) g.board[7][6 + i] = { letter: l, blank: false };
+    g.board[8][9] = { letter: 'U', blank: false }; // forme TU en colonne
+    expect(boardWords(g.board).map((w) => w.word).sort()).toEqual(['CHAT', 'TU']);
+  });
+});

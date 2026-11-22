@@ -29,7 +29,29 @@ export interface HistoryEntry {
 }
 
 /** Mot resté sur le plateau (modes challenge et compétition), pour démasquer en fin de partie les mots non valables. */
-export interface PlayedWord { word: string; cells: [number, number][]; score: number; player: 0 | 1 }
+export interface PlayedWord {
+  word: string; cells: [number, number][]; score: number; player: 0 | 1;
+  /** Mot retrouvé en relisant le plateau (partie commencée avant que les mots soient retenus) : points du coup entier. */
+  moveScore?: number;
+}
+
+/** Tous les mots du plateau : suites d'au moins deux lettres, en ligne et en colonne. */
+export function boardWords(b: Board): { word: string; cells: [number, number][] }[] {
+  const out: { word: string; cells: [number, number][] }[] = [];
+  for (const horiz of [true, false]) {
+    for (let i = 0; i < b.length; i++) {
+      let word = '', cells: [number, number][] = [];
+      for (let j = 0; j <= b.length; j++) {
+        const [r, c] = horiz ? [i, j] : [j, i];
+        const t = j < b.length ? b[r][c] : null;
+        if (t) { word += t.letter; cells.push([r, c]); continue; }
+        if (word.length >= 2) out.push({ word, cells });
+        word = ''; cells = [];
+      }
+    }
+  }
+  return out;
+}
 
 /** Mode challenge : coup posé, en attente de la décision de l'adversaire. */
 export interface Proposal { player: 0 | 1; move: Move }
