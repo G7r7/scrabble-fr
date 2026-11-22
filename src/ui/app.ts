@@ -6,7 +6,10 @@ import {
   saveGame, winnerText, type GameState, type HistoryEntry, type Variant,
 } from '../game/game';
 import type { Action } from '../game/remote';
-import { DICTS, dictInfo, dictOf, type DictId, type GameDict } from '../game/dicts';
+import {
+  DICTS, LEXICON_ONLINE_MAX, applyLexicon, dictInfo, dictOf, lexiconKey, type CustomList, type DictId, type GameDict, type Lexicon,
+} from '../game/dicts';
+import { deleteList, loadLists, newListId, saveList } from '../dict/lists';
 import { CLOCK_MINUTES, DEFAULT_MINUTES, WRONG_CHALLENGE_PENALTY, clockUpdate, settleTime, timeLeft, timedOut } from '../game/clock';
 import { THEMES, THEME_MULT, applyTheme, themeInfo, themeOf, type ThemeId } from '../game/themes';
 import type { Placement } from '../game/types';
@@ -80,9 +83,13 @@ export class App {
   private exchangeMode = false;
   private exchangeSel = new Set<number>();
   /** Liste chargée dans le moteur (vérification des mots et ordinateur). */
-  private dict: { id: GameDict; label: string; count: number } | null = null;
+  private dict: { id: string; label: string; count: number; lexicon?: Lexicon } | null = null;
   /** Liste demandée (la partie en cours) et chargement en cours. */
-  private dictWanted: GameDict | null = null;
+  private dictWanted: string | null = null;
+  /** Listes perso enregistrées dans ce navigateur. */
+  private lists: CustomList[] = [];
+  /** Texte des listes du jeu déjà téléchargées (pour les listes perso et l'explorateur). */
+  private listTexts = new Map<DictId, Promise<string>>();
   private dictLoading: Promise<void> = Promise.resolve();
   private dictError = '';
   /** Nom du fichier ODS importé sur cet appareil, s'il y en a un. */
@@ -139,6 +146,7 @@ export class App {
     const loading = $(this.root, '#loading');
     const ods = await loadOds();
     this.odsName = ods?.name ?? null;
+    this.lists = await loadLists();
     // Avant le choix de liste, un ODS importé servait à toutes les parties : on garde ce choix.
     if (!lsGet(DICT_KEY) && ods) lsSet(DICT_KEY, 'ods');
     const saved = loadGame();
@@ -146,7 +154,7 @@ export class App {
     // Partie de compétition reprise : la pendule ne tournait pas pendant que l'appli était fermée.
     if (this.game.clock) this.game.clock.since = Date.now();
     setInterval(() => this.tickClock(), 250);
-    await this.useDict(this.gameDict());
+    await this.useDict();
     if (!this.dict) {
       loading.innerHTML = `<p>Impossible de charger le dictionnaire.</p><p class="muted">${esc(this.dictError)}</p>`;
       return;
@@ -187,14 +195,40 @@ export class App {
     return d === 'ods' && (this.mode === 'online' || !this.odsName) ? 'libre' : d;
   }
 
-  /** Charge la liste `id` dans le moteur, si ce n'est pas déjà elle (les chargements s'enchaînent). */
-  private useDict(id: GameDict): Promise<void> {
-    if (id === this.dictWanted) return this.dictLoading;
-    this.dictWanted = id;
+  /** Mots d'une liste du jeu (téléchargée une fois, puis en cache). */
+  private listText(id: DictId): Promise<string> {
+    let p = this.listTexts.get(id);
+    if (!p) {
+      p = fetch(`${import.meta.env.BASE_URL}dict/${dictInfo(id).file}`).then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.text();
+      });
+      p.catch(() => this.listTexts.delete(id));
+      this.listTexts.set(id, p);
+    }
+    return p;
+  }
+
+  /**
+   * Charge dans le moteur la liste de la partie en cours, si ce n'est pas déjà elle (les chargements
+   * s'enchaînent) : une liste du jeu, le fichier ODS importé, ou une liste perso (modèle + différences).
+   */
+  private useDict(): Promise<void> {
+    const lex = this.game?.lexicon && this.gameDict() !== 'ods' ? this.game.lexicon : null;
+    const want = lex ? `perso:${lexiconKey(lex)}` : this.gameDict();
+    if (want === this.dictWanted) return this.dictLoading;
+    this.dictWanted = want;
     this.dictLoading = this.dictLoading.then(async () => {
-      if (this.dictWanted !== id || this.dict?.id === id) return;
+      if (this.dictWanted !== want || this.dict?.id === want) return;
       this.dictError = '';
       this.renderDict();
+      if (lex) {
+        const words = applyLexicon((await this.listText(lex.base)).split('\n').filter(Boolean), lex);
+        const { count } = await this.engine.load(words.join('\n'));
+        this.dict = { id: want, label: lex.name, count, lexicon: lex };
+        return;
+      }
+      let id = want as GameDict;
       if (id === 'ods') {
         const ods = await loadOds();
         if (ods) {
@@ -205,9 +239,7 @@ export class App {
         id = 'libre';
       }
       const info = dictInfo(id);
-      const res = await fetch(`${import.meta.env.BASE_URL}dict/${info.file}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const { count } = await this.engine.load(await res.text());
+      const { count } = await this.engine.load(await this.listText(id));
       this.dict = { id, label: info.label, count };
     }).catch((err) => {
       this.dictError = String(err);
@@ -287,7 +319,18 @@ export class App {
     const m = Number(lsGet(MINUTES_KEY));
     return (CLOCK_MINUTES as readonly number[]).includes(m) ? m : DEFAULT_MINUTES;
   }
-  private prefs() { return { variant: this.variantPref(), theme: this.themePref(), dict: this.dictPref(), minutes: this.minutesPref() }; }
+  private prefs() {
+    return { variant: this.variantPref(), theme: this.themePref(), dict: this.dictPref(), lexicon: this.persoPref(), minutes: this.minutesPref() };
+  }
+  /** Liste perso choisie la dernière fois (résumé figé pour une nouvelle partie), s'il y en a une. */
+  private persoPref(): Lexicon | null {
+    const v = lsGet(DICT_KEY);
+    return v?.startsWith('perso:') ? this.lexiconOf(v.slice(6)) : null;
+  }
+  private lexiconOf(id: string): Lexicon | null {
+    const l = this.lists.find((x) => x.id === id);
+    return l ? { name: l.name, base: l.base, add: [...l.add], remove: [...l.remove] } : null;
+  }
 
   /** Compétition : met à jour l'affichage des pendules ; en solo, applique le temps épuisé. */
   private tickClock() {
@@ -317,7 +360,7 @@ export class App {
   }
 
   /** Nouvelle partie contre l'ordinateur (depuis la fenêtre « Nouvelle partie », ou « Rejouer » en fin de partie). */
-  private startSolo(level: Level, opts: { variant: Variant | null; theme: ThemeId | null; dict: GameDict; minutes?: number }) {
+  private startSolo(level: Level, opts: { variant: Variant | null; theme: ThemeId | null; dict: GameDict; lexicon?: Lexicon | null; minutes?: number }) {
     const solo = this.mode === 'solo' ? this.game : loadGame();
     if (solo && !solo.over && solo.history.length > 0 && !confirm('Abandonner la partie en cours contre l’ordinateur ?')) return false;
     // Une partie en ligne en cours n'est pas quittée : elle reste dans « Mes parties en cours ».
@@ -326,7 +369,7 @@ export class App {
     this.game = newGame(level, null, opts);
     this.resetBoardUi();
     const parts = [`niveau ${level}`, variantLabel(opts.variant) !== 'Normal' ? `mode ${variantLabel(opts.variant)}` : '',
-      opts.dict === 'ods' ? 'votre fichier' : opts.dict !== 'libre' ? `liste ${dictInfo(opts.dict).label}` : '',
+      opts.lexicon ? `liste perso « ${opts.lexicon.name} »` : opts.dict === 'ods' ? 'votre fichier' : opts.dict !== 'libre' ? `liste ${dictInfo(opts.dict).label}` : '',
       opts.theme ? `thème ${themeInfo(opts.theme).label}` : '',
       opts.variant === 'tournoi' ? `pendule de ${opts.minutes ?? DEFAULT_MINUTES} min chacun` : ''].filter(Boolean);
     this.setStatus(`Nouvelle partie contre l’ordinateur : ${parts.join(', ')}.`);
@@ -988,7 +1031,7 @@ export class App {
     } else if (view === 'menu') {
       const opp = lsGet(OPP_KEY) === 'online' ? 'online' : 'solo';
       const variant = this.variantPref() ?? 'normal', level = this.readLevel();
-      const dict = this.dictPref();
+      const dict = lsGet(DICT_KEY)?.startsWith('perso:') && this.persoPref() ? lsGet(DICT_KEY)! : this.dictPref();
       const seg = (nameAttr: string, items: { id: string; label: string; cls?: string }[], cur: string, label: string) =>
         `<div class="seg" role="radiogroup" aria-label="${label}" style="--n:${items.length}">${items.map((x) => `<label class="seg-opt ${x.cls ?? ''}">
           <input type="radio" name="${nameAttr}" value="${x.id}" ${cur === x.id ? 'checked' : ''} /><span>${x.label}</span></label>`).join('')}</div>`;
@@ -1007,8 +1050,11 @@ export class App {
           <div class="setup-row only-tournoi"><span class="setup-label">Pendule</span>${seg('olMinutes',
             CLOCK_MINUTES.map((m) => ({ id: String(m), label: `${m} min` })), String(this.minutesPref()), 'Temps par joueur')}</div>
           <label class="setup-row"><span class="setup-label">Liste</span><select id="olDict">${DICTS.map((d) =>
-            `<option value="${d.id}" ${dict === d.id ? 'selected' : ''}>${d.label} (${d.words} mots)</option>`).join('')}${this.odsName
+            `<option value="${d.id}" ${dict === d.id ? 'selected' : ''}>${d.label} (${d.words} mots)</option>`).join('')}${this.lists.map((l) =>
+            `<option value="perso:${l.id}" data-big="${l.add.length + l.remove.length > LEXICON_ONLINE_MAX ? 1 : ''}" ${dict === `perso:${l.id}` ? 'selected' : ''}
+              ${opp === 'online' && l.add.length + l.remove.length > LEXICON_ONLINE_MAX ? 'disabled' : ''}>Perso : ${esc(l.name)}</option>`).join('')}${this.odsName
             ? `<option value="ods" ${dict === 'ods' ? 'selected' : ''} ${opp === 'online' ? 'disabled' : ''}>Mon fichier : ${esc(this.odsName)}</option>` : ''}</select></label>
+          <p class="setup-help"><button type="button" class="link" data-ol="lists">Voir les listes, créer ma liste perso…</button></p>
           <label class="setup-row"><span class="setup-label">Thème</span><select id="olTheme">${this.themeOptions(this.themePref())}</select></label>
           <button class="btn primary wide" data-ol="start">Démarrer la partie</button>
           <p class="setup-note only-online">Vous recevrez un lien à envoyer à votre adversaire. La partie est gardée sur le serveur :
@@ -1101,18 +1147,23 @@ export class App {
         lsSet(OPP_KEY, online ? 'online' : 'solo');
         lsSet(VARIANT_KEY, variant ?? 'normal');
         lsSet(THEME_KEY, theme ?? '');
+        const lexicon = dictVal?.startsWith('perso:') ? this.lexiconOf(dictVal.slice(6)) : null;
         if (!online) {
-          const dict: GameDict = dictVal === 'ods' && this.odsName ? 'ods' : dictOf(dictVal) ?? 'libre';
-          lsSet(DICT_KEY, dict);
+          const dict: GameDict = lexicon ? lexicon.base : dictVal === 'ods' && this.odsName ? 'ods' : dictOf(dictVal) ?? 'libre';
+          lsSet(DICT_KEY, lexicon ? dictVal! : dict);
           lsSet('scrabble-fr-niveau', level);
-          if (this.startSolo(level, { variant, theme, dict, minutes })) this.closeLobby();
+          if (this.startSolo(level, { variant, theme, dict, lexicon, minutes })) this.closeLobby();
           return;
         }
         if (!saveName()) return;
-        const dict: DictId = dictOf(dictVal) ?? 'libre';
-        lsSet(DICT_KEY, dict);
-        this.createGame({ variant, theme, dict, minutes });
+        if (lexicon && lexicon.add.length + lexicon.remove.length > LEXICON_ONLINE_MAX) {
+          return this.setStatus(`En ligne, une liste perso est limitée à ${LEXICON_ONLINE_MAX} mots ajoutés ou retirés.`, true);
+        }
+        const dict: DictId = lexicon ? lexicon.base : dictOf(dictVal) ?? 'libre';
+        lsSet(DICT_KEY, lexicon ? dictVal! : dict);
+        this.createGame({ variant, theme, dict, minutes, lexicon });
       }
+      else if (a === 'lists') this.openLists();
       else if (a === 'close' || a === 'cancel') cancel();
       else if (a === 'menu') this.lobby('menu');
       else if (a === 'copy') {
@@ -1157,12 +1208,231 @@ export class App {
         if (setup) setup.dataset.opp = t.value;
         // Votre fichier ODS ne sert qu'en solo : il ne part jamais sur le serveur.
         const ods = body.querySelector<HTMLOptionElement>('#olDict option[value="ods"]');
-        if (ods) {
-          ods.disabled = t.value === 'online';
-          const sel = ods.parentElement as HTMLSelectElement;
-          if (ods.disabled && sel.value === 'ods') sel.value = 'libre';
-        }
+        if (ods) ods.disabled = t.value === 'online';
+        // Liste perso trop grande pour être envoyée au serveur : seulement en solo.
+        for (const o of body.querySelectorAll<HTMLOptionElement>('#olDict option[data-big="1"]')) o.disabled = t.value === 'online';
+        const sel = body.querySelector<HTMLSelectElement>('#olDict');
+        if (sel?.selectedOptions[0]?.disabled) sel.value = 'libre';
         if (t.value === 'online') body.querySelector<HTMLInputElement>('#olName')?.focus();
+      }
+    });
+  }
+
+  // ---------- Listes de mots : explorateur et listes perso ----------
+
+  /** Explorateur : liste affichée (id d'une liste du jeu ou d'une liste perso), mots, recherche. */
+  private lx = {
+    sel: 'libre', key: '', words: [] as string[], base: [] as string[], added: new Set<string>(),
+    query: '', len: 0, shown: 240, matches: [] as string[], creating: false, busy: false,
+  };
+  private lxTimer: ReturnType<typeof setTimeout> | null = null;
+
+  private openLists(sel?: string) {
+    const d = $(this.root, '#listsDialog');
+    d.classList.add('open');
+    const cur = this.game?.lexicon ? this.lists.find((l) => l.name === this.game.lexicon!.name && l.base === this.game.lexicon!.base)?.id : null;
+    this.lx.sel = sel ?? (cur ? cur : dictOf(this.game?.dict) ?? 'libre');
+    this.lx.creating = false;
+    this.renderLists();
+    void this.loadLx();
+  }
+
+  private lxList(): CustomList | null { return this.lists.find((l) => l.id === this.lx.sel) ?? null; }
+
+  /** Charge les mots de la liste choisie (modèle + différences pour une liste perso). */
+  private async loadLx() {
+    const perso = this.lxList();
+    const base: DictId = perso ? perso.base : (dictOf(this.lx.sel) ?? 'libre');
+    const key = perso ? `${perso.id}:${lexiconKey(perso)}` : base;
+    if (key === this.lx.key) return this.filterLx();
+    this.lx.busy = true;
+    this.renderLists();
+    try {
+      const words = (await this.listText(base)).split('\n').filter(Boolean);
+      this.lx.base = words;
+      this.lx.words = perso ? applyLexicon(words, perso) : words;
+      this.lx.added = new Set(perso?.add ?? []);
+      this.lx.key = key;
+    } catch (err) {
+      this.setStatus(`Impossible de charger la liste : ${err}`, true);
+    }
+    this.lx.busy = false;
+    this.filterLx();
+  }
+
+  /** Recherche : début de mot (CHA), ou motif avec ? (une lettre) et * (n'importe quelle suite). */
+  private filterLx() {
+    const q = this.lx.query.toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Z?*]/g, '');
+    const len = this.lx.len;
+    let test: (w: string) => boolean;
+    if (/[?*]/.test(q)) {
+      const re = new RegExp(`^${q.replace(/\?/g, '.').replace(/\*/g, '.*')}$`);
+      test = (w) => re.test(w);
+    } else test = (w) => w.startsWith(q);
+    this.lx.matches = this.lx.words.filter((w) => (!len || w.length === len) && test(w));
+    this.lx.shown = 240;
+    this.renderLxWords();
+  }
+
+  /** Le mot fait-il partie du modèle ? (recherche dichotomique dans la liste triée) */
+  private inBase(w: string) {
+    const a = this.lx.base;
+    let lo = 0, hi = a.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >> 1;
+      if (a[mid] === w) return true;
+      if (a[mid] < w) lo = mid + 1; else hi = mid - 1;
+    }
+    return false;
+  }
+
+  private renderLists() {
+    const body = $(this.root, '#listsBody');
+    const perso = this.lxList();
+    const opts = DICTS.map((d) => `<option value="${d.id}" ${this.lx.sel === d.id ? 'selected' : ''}>${d.label} (${d.words} mots)</option>`).join('') +
+      (this.lists.length ? `<optgroup label="Mes listes perso">${this.lists.map((l) =>
+        `<option value="${l.id}" ${this.lx.sel === l.id ? 'selected' : ''}>${esc(l.name)}</option>`).join('')}</optgroup>` : '');
+    const info = this.lx.creating
+      ? `<form class="lx-new" data-lx-form="new">
+          <label class="field">Nom de la liste<input id="lxName" maxlength="40" placeholder="Ma liste" required /></label>
+          <label class="field">À partir de<select id="lxBase">${DICTS.map((d) => `<option value="${d.id}" ${(dictOf(this.lx.sel) ?? perso?.base ?? 'libre') === d.id ? 'selected' : ''}>${d.label} (${d.words} mots)</option>`).join('')}</select></label>
+          <p class="note">La liste perso part de ce modèle ; seuls les mots que vous ajoutez ou retirez sont enregistrés, dans ce navigateur.</p>
+          <div class="row"><button class="btn primary">Créer la liste</button><button type="button" class="btn" data-lx="cancel-new">Annuler</button></div>
+        </form>`
+      : perso
+      ? `<div class="lx-info">
+          <label class="field">Nom<input id="lxRename" maxlength="40" value="${esc(perso.name)}" /></label>
+          <p class="muted">D’après « ${esc(dictInfo(perso.base).label)} » · <b class="good">+${perso.add.length}</b> ajouté${perso.add.length > 1 ? 's' : ''}
+            · <b class="bad">−${perso.remove.length}</b> retiré${perso.remove.length > 1 ? 's' : ''}
+            ${perso.add.length + perso.remove.length > LEXICON_ONLINE_MAX ? ` · trop de changements pour le jeu en ligne (${LEXICON_ONLINE_MAX} au plus)` : ''}</p>
+          <form class="check" data-lx-form="add"><input id="lxAdd" placeholder="Ajouter des mots (séparés par des espaces)" autocomplete="off" autocapitalize="characters" /><button class="btn">Ajouter</button></form>
+          <p class="note">Touchez un mot de la liste pour le retirer.</p>
+        </div>`
+      : `<p class="muted lx-info">${esc(dictInfo(dictOf(this.lx.sel) ?? 'libre').help)} D’après ${esc(dictInfo(dictOf(this.lx.sel) ?? 'libre').source)} (${dictInfo(dictOf(this.lx.sel) ?? 'libre').licence}).</p>`;
+    body.innerHTML = `
+      <h2>Listes de mots</h2>
+      <div class="lx-top">
+        <select id="lxSel" aria-label="Liste affichée">${opts}</select>
+        <button type="button" class="btn" data-lx="new">Nouvelle liste perso…</button>
+      </div>
+      ${info}
+      <div class="lx-search">
+        <input id="lxQ" placeholder="Rechercher : CHA, ?A?E, *TION" value="${esc(this.lx.query)}" autocomplete="off" autocapitalize="characters" />
+        <select id="lxLen" aria-label="Longueur"><option value="0">Toutes longueurs</option>${Array.from({ length: 14 }, (_, i) => i + 2).map((n) =>
+          `<option value="${n}" ${this.lx.len === n ? 'selected' : ''}>${n} lettres</option>`).join('')}</select>
+      </div>
+      <p id="lxCount" class="muted"></p>
+      <div id="lxWords" class="lx-words ${perso ? 'editable' : ''}"></div>
+      <div class="lx-more"><button type="button" class="btn" id="lxMore" hidden>Afficher plus</button></div>
+      ${perso && perso.remove.length ? `<details class="lx-removed"><summary>Mots retirés (${perso.remove.length})</summary><div class="lx-words">${
+        perso.remove.slice(0, 500).map((w) => `<button type="button" class="lx-w removed" data-restore="${w}" title="Remettre ${w}">${w}</button>`).join('')}</div></details>` : ''}
+      ${perso ? `<div class="row lx-danger"><button type="button" class="link bad" data-lx="delete">Supprimer cette liste</button></div>` : ''}
+      <div class="row"><button type="button" class="btn primary" data-lx="close">Fermer</button></div>`;
+    this.renderLxWords();
+    if (this.lx.creating) body.querySelector<HTMLInputElement>('#lxName')?.focus();
+  }
+
+  private renderLxWords() {
+    const body = $(this.root, '#listsBody');
+    const box = body.querySelector<HTMLElement>('#lxWords');
+    const count = body.querySelector<HTMLElement>('#lxCount');
+    const more = body.querySelector<HTMLButtonElement>('#lxMore');
+    if (!box || !count || !more) return;
+    if (this.lx.busy) { count.textContent = 'Chargement de la liste…'; box.innerHTML = ''; more.hidden = true; return; }
+    const m = this.lx.matches, perso = !!this.lxList();
+    count.textContent = `${m.length.toLocaleString('fr-FR')} mot${m.length > 1 ? 's' : ''}${this.lx.query || this.lx.len ? ` trouvé${m.length > 1 ? 's' : ''}` : ''}`;
+    box.innerHTML = m.slice(0, this.lx.shown).map((w) => perso
+      ? `<button type="button" class="lx-w ${this.lx.added.has(w) ? 'added' : ''}" data-drop="${w}" title="Retirer ${w}">${w}</button>`
+      : `<span class="lx-w">${w}</span>`).join('');
+    more.hidden = m.length <= this.lx.shown;
+  }
+
+  /** Enregistre la liste perso modifiée et met l'explorateur à jour. */
+  private async commitList(l: CustomList, msg?: string) {
+    l.updated = Date.now();
+    await saveList(l);
+    this.lists = await loadLists();
+    this.lx.key = '';
+    if (msg) this.setStatus(msg);
+    this.renderLists();
+    await this.loadLx();
+  }
+
+  private bindLists() {
+    const body = $(this.root, '#listsBody');
+    const dlg = $(this.root, '#listsDialog');
+    dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.classList.remove('open'); });
+    body.addEventListener('change', (e) => {
+      const t = e.target as HTMLElement;
+      if (t.id === 'lxSel') { this.lx.sel = (t as HTMLSelectElement).value; this.lx.creating = false; this.renderLists(); void this.loadLx(); }
+      else if (t.id === 'lxLen') { this.lx.len = +(t as HTMLSelectElement).value; this.filterLx(); }
+      else if (t.id === 'lxRename') {
+        const l = this.lxList();
+        const name = (t as HTMLInputElement).value.replace(/[\u0000-\u001f]/g, '').trim().slice(0, 40);
+        if (l && name && name !== l.name) { l.name = name; void this.commitList(l); }
+      }
+    });
+    body.addEventListener('input', (e) => {
+      const t = e.target as HTMLInputElement;
+      if (t.id !== 'lxQ') return;
+      this.lx.query = t.value;
+      if (this.lxTimer) clearTimeout(this.lxTimer);
+      this.lxTimer = setTimeout(() => this.filterLx(), 150);
+    });
+    body.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const form = (e.target as HTMLElement).closest<HTMLElement>('[data-lx-form]')?.dataset.lxForm;
+      if (form === 'new') {
+        const name = $<HTMLInputElement>(body, '#lxName').value.replace(/[\u0000-\u001f]/g, '').trim().slice(0, 40) || 'Ma liste';
+        const base = dictOf($<HTMLSelectElement>(body, '#lxBase').value) ?? 'libre';
+        const l: CustomList = { id: newListId(), name, base, add: [], remove: [], updated: Date.now() };
+        this.lx.sel = l.id;
+        this.lx.creating = false;
+        await this.commitList(l, `Liste perso « ${name} » créée d’après « ${dictInfo(base).label} ».`);
+      } else if (form === 'add') {
+        const l = this.lxList();
+        const input = $<HTMLInputElement>(body, '#lxAdd');
+        if (!l) return;
+        const words = [...new Set(input.value.split(/[\s,;]+/).map((w) => normalizeWord(w)).filter((w): w is string => !!w))];
+        let n = 0;
+        for (const w of words) {
+          const r = l.remove.indexOf(w);
+          if (r >= 0) { l.remove.splice(r, 1); n++; continue; }
+          if (!this.inBase(w) && !l.add.includes(w)) { l.add.push(w); n++; }
+        }
+        l.add.sort();
+        input.value = '';
+        await this.commitList(l, n ? `${n} mot${n > 1 ? 's' : ''} ajouté${n > 1 ? 's' : ''} à « ${l.name} ».` : 'Ces mots sont déjà dans la liste.');
+      }
+    });
+    body.addEventListener('click', async (e) => {
+      const t = e.target as HTMLElement;
+      const act = t.closest<HTMLElement>('[data-lx]')?.dataset.lx;
+      const l = this.lxList();
+      if (act === 'close') return dlg.classList.remove('open');
+      if (act === 'new') { this.lx.creating = true; return this.renderLists(); }
+      if (act === 'cancel-new') { this.lx.creating = false; return this.renderLists(); }
+      if (act === 'delete' && l) {
+        if (!confirm(`Supprimer la liste « ${l.name} » ? Les parties déjà commencées avec elle continuent normalement.`)) return;
+        await deleteList(l.id);
+        this.lists = await loadLists();
+        if (lsGet(DICT_KEY) === `perso:${l.id}`) lsSet(DICT_KEY, l.base);
+        this.lx.sel = l.base;
+        this.lx.key = '';
+        this.renderLists();
+        return void this.loadLx();
+      }
+      if (t.id === 'lxMore') { this.lx.shown += 480; return this.renderLxWords(); }
+      const drop = t.closest<HTMLElement>('[data-drop]')?.dataset.drop;
+      if (drop && l) {
+        const a = l.add.indexOf(drop);
+        if (a >= 0) l.add.splice(a, 1); else if (!l.remove.includes(drop)) { l.remove.push(drop); l.remove.sort(); }
+        return void this.commitList(l, `${drop} retiré de « ${l.name} ».`);
+      }
+      const restore = t.closest<HTMLElement>('[data-restore]')?.dataset.restore;
+      if (restore && l) {
+        l.remove = l.remove.filter((w) => w !== restore);
+        return void this.commitList(l, `${restore} remis dans « ${l.name} ».`);
       }
     });
   }
@@ -1274,7 +1544,7 @@ export class App {
     $(this.root, '#endNew').addEventListener('click', () => {
       if (this.mode !== 'solo') return this.rematch();
       const g = this.game;
-      this.startSolo(g.level, { variant: g.variant ?? null, theme: g.theme ?? null, dict: g.dict ?? 'libre',
+      this.startSolo(g.level, { variant: g.variant ?? null, theme: g.theme ?? null, dict: g.dict ?? 'libre', lexicon: g.lexicon ?? null,
         minutes: g.clock ? g.clock.limit / 60_000 : undefined });
     });
     $(this.root, '#transferBtn').addEventListener('click', () => this.lobby('transfer'));
@@ -1320,6 +1590,7 @@ export class App {
     this.renderSoundButtons();
     this.bindNotifications();
     this.bindLobby();
+    this.bindLists();
     $(this.root, '#endClose').addEventListener('click', () => $(this.root, '#endDialog').classList.remove('open'));
     this.el.dict.addEventListener('change', (e) => {
       const input = e.target as HTMLInputElement;
@@ -1329,6 +1600,7 @@ export class App {
     });
     this.el.dict.addEventListener('click', (e) => {
       if ((e.target as HTMLElement).closest('[data-revert]')) void this.revertToFree();
+      if ((e.target as HTMLElement).closest('[data-lists]')) this.openLists();
     });
     this.el.dict.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -1783,7 +2055,7 @@ export class App {
     const prop = new Map((g.proposal?.move.placements ?? []).map((p) => [p.r * SIZE + p.c, p]));
     const themed = new Set(g.themeCells ?? []);
     this.renderFantasy(g.theme ?? null);
-    void this.useDict(this.gameDict());
+    void this.useDict();
     const cells = this.el.board.children;
     for (let r = 0; r < SIZE; r++) {
       for (let c = 0; c < SIZE; c++) {
@@ -1821,7 +2093,8 @@ export class App {
     this.tickClock();
     this.el.bag.innerHTML = `${g.bag.length} jeton${g.bag.length > 1 ? 's' : ''} dans le sac` +
       (g.variant ? ` · <span class="variant-tag v-${g.variant}">${variantLabel(g.variant)}</span>` : '') +
-      (g.dict && g.dict !== 'libre' ? ` · <span class="variant-tag dict-tag">${esc(g.dict === 'ods' ? 'ODS' : dictInfo(g.dict).label)}</span>` : '') +
+      (g.lexicon ? ` · <span class="variant-tag dict-tag">Perso : ${esc(g.lexicon.name)}</span>`
+        : g.dict && g.dict !== 'libre' ? ` · <span class="variant-tag dict-tag">${esc(g.dict === 'ods' ? 'ODS' : dictInfo(g.dict).label)}</span>` : '') +
       (g.theme ? ` · <span class="variant-tag theme-tag">${themeInfo(g.theme).icons[0]} ${themeInfo(g.theme).label}</span>` : '');
 
     this.el.history.innerHTML = g.history.length
@@ -1915,14 +2188,18 @@ export class App {
     const head = this.el.dict?.querySelector<HTMLElement>('#dictHead');
     if (!head) return;
     const d = this.dict, loading = this.dictWanted !== null && d?.id !== this.dictWanted;
-    const info = d && d.id !== 'ods' ? dictInfo(d.id) : null;
+    const info = d && !d.lexicon && d.id !== 'ods' ? dictInfo(d.id as DictId) : null;
     head.innerHTML = (loading ? '<strong>Chargement de la liste…</strong>'
       : !d ? `<strong class="bad">Liste indisponible</strong><span>${esc(this.dictError)}</span>`
+      : d.lexicon
+        ? `<strong>Perso : ${esc(d.label)}</strong><span>${d.count.toLocaleString('fr-FR')} mots · d’après « ${esc(dictInfo(d.lexicon.base).label)} »,
+           ${d.lexicon.add.length} ajouté${d.lexicon.add.length > 1 ? 's' : ''}, ${d.lexicon.remove.length} retiré${d.lexicon.remove.length > 1 ? 's' : ''}</span>`
       : d.id === 'ods'
         ? `<strong>${esc(d.label)}</strong><span>${d.count.toLocaleString('fr-FR')} mots · importé, stocké sur cet appareil</span>`
         : `<strong>${esc(d.label)}</strong><span>${d.count.toLocaleString('fr-FR')} mots · ${esc(info!.help)}</span>`) +
       `<span class="muted">${this.mode === 'online' ? 'Liste choisie par la personne qui a créé la partie ; le serveur vérifie chaque coup avec elle.'
-        : 'Changer de liste : Options.'}</span>` +
+        : 'Changer de liste : Nouvelle partie.'}</span>` +
+      `<button type="button" class="btn small" data-lists>Voir les listes, créer ma liste perso…</button>` +
       (this.odsName ? `<button type="button" class="link" data-revert>Supprimer mon fichier importé</button>` : '');
     const credits = this.el.dict.querySelector<HTMLElement>('#dictCredits');
     if (credits && !credits.childElementCount) {
@@ -2059,6 +2336,7 @@ const TEMPLATE = `
   <button class="btn" data-cancel>Annuler</button>
 </div></div>
 <div id="onlineDialog" class="overlay"><div class="card online" id="onlineBody"></div></div>
+<div id="listsDialog" class="overlay"><div class="card lists" id="listsBody"></div></div>
 <div id="endDialog" class="overlay"><div class="card">
   <h2 id="endTitle"></h2><p id="endDetail" class="muted"></p>
   <div class="row"><button class="btn primary" id="endNew">Nouvelle partie</button><button class="btn" id="endClose">Voir le plateau</button></div>

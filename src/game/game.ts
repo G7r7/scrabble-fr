@@ -5,7 +5,7 @@ import { rackValue } from './rules';
 import type { Board, FormedWord, Move } from './types';
 import type { Level } from '../ai/player';
 import { applyTheme, type ThemeId } from './themes';
-import type { GameDict } from './dicts';
+import type { GameDict, Lexicon } from './dicts';
 import { newClock, WRONG_CHALLENGE_PENALTY, type Clock } from './clock';
 
 export type Variant = 'challenge' | 'hardcore' | 'tournoi';
@@ -55,6 +55,8 @@ export interface GameState {
   clock?: Clock;
   /** Liste de mots de la partie (absente = liste libre). */
   dict?: GameDict;
+  /** Liste perso : le modèle (`dict`) plus les mots ajoutés et retirés, figés au début de la partie. */
+  lexicon?: Lexicon;
   /** Mode fantasy : thème de la partie (ses mots rapportent double). */
   theme?: ThemeId;
   /** Mode fantasy : cases des mots du thème déjà joués (elles chatoient). */
@@ -66,7 +68,7 @@ export interface GameState {
 export const HUMAN = 0, AI = 1;
 const MAX_SCORELESS = 6;
 
-export function newGame(level: Level, online?: { names: [string, string] } | null, opts: { variant?: Variant | null; theme?: ThemeId | null; dict?: GameDict | null; minutes?: number; now?: number } = {}): GameState {
+export function newGame(level: Level, online?: { names: [string, string] } | null, opts: { variant?: Variant | null; theme?: ThemeId | null; dict?: GameDict | null; lexicon?: Lexicon | null; minutes?: number; now?: number } = {}): GameState {
   const bag = newBag();
   const [n0, n1] = online?.names ?? ['Vous', 'Ordinateur'];
   const players: [Player, Player] = [
@@ -81,7 +83,8 @@ export function newGame(level: Level, online?: { names: [string, string] } | nul
     ...(online ? { online: true } : {}),
     ...(opts.variant ? { variant: opts.variant } : {}),
     ...(opts.theme ? { theme: opts.theme } : {}),
-    ...(opts.dict && opts.dict !== 'libre' ? { dict: opts.dict } : {}),
+    ...(opts.lexicon ? { dict: opts.lexicon.base, lexicon: opts.lexicon }
+      : opts.dict && opts.dict !== 'libre' ? { dict: opts.dict } : {}),
     ...(opts.variant === 'tournoi' ? { clock: newClock(opts.minutes ?? 20, current, opts.now ?? Date.now()) } : {}),
   };
 }

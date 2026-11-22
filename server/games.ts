@@ -4,7 +4,7 @@ import { newGame, type GameState, type Variant } from '../src/game/game';
 import { applyAction, parseAction, viewFor } from '../src/game/remote';
 import { CLOSE, cleanName, type GameSummary, type ServerMsg } from '../src/net/protocol';
 import { themeOf, type ThemeId } from '../src/game/themes';
-import { DEFAULT_DICT, dictOf, type DictId } from '../src/game/dicts';
+import { DEFAULT_DICT, LEXICON_ONLINE_MAX, cleanLexicon, dictOf, type DictId, type Lexicon } from '../src/game/dicts';
 import { CLOCK_MINUTES, DEFAULT_MINUTES, clockUpdate, nextTimeout, settleTime } from '../src/game/clock';
 
 export type SeatNo = 0 | 1;
@@ -16,6 +16,8 @@ export interface Room {
   theme?: ThemeId | null;
   /** Liste de mots qui arbitre la partie (absente = liste libre). */
   dict?: DictId | null;
+  /** Liste perso du créateur : `dict` (le modèle) plus des mots ajoutés et retirés. */
+  lexicon?: Lexicon | null;
   /** Mode compétition : minutes par joueur. */
   minutes?: number;
   state: GameState | null;
@@ -34,8 +36,8 @@ const isToken = (s: string) => /^[a-f0-9]{16,64}$/.test(s);
 export interface GamesIo {
   /** Envoie un message au joueur `seat` de la partie s'il est connecté. */
   send(room: Room, seat: SeatNo, msg: ServerMsg): void;
-  /** Mots absents de la liste `dict` (chargée à la demande). */
-  invalidWords(words: string[], dict: DictId): string[] | Promise<string[]>;
+  /** Mots absents de la liste `dict` (chargée à la demande), corrigée par la liste perso `lexicon`. */
+  invalidWords(words: string[], dict: DictId, lexicon?: Lexicon | null): string[] | Promise<string[]>;
   /** Les parties ont changé (à sauvegarder). */
   changed(): void;
   now?: () => number;
@@ -86,6 +88,8 @@ export class Games {
         room.minutes = (CLOCK_MINUTES as readonly unknown[]).includes(min) ? min as number : DEFAULT_MINUTES;
         room.theme = themeOf((m.options as Record<string, unknown>).theme);
         room.dict = dictOf((m.options as Record<string, unknown>).dict);
+        room.lexicon = cleanLexicon((m.options as Record<string, unknown>).lexicon, LEXICON_ONLINE_MAX);
+        if (room.lexicon) room.dict = room.lexicon.base;
       }
       if (!room.state && room.seats[0].name && room.seats[1]?.name) return this.start(room);
       if (!room.state) return this.io.send(room, seat, { type: 'waiting' });
@@ -103,7 +107,7 @@ export class Games {
       const st = room.state;
       // Compétition : un joueur dont le temps vient de s'épuiser a déjà passé son tour.
       if (st.clock && settleTime(st, this.now())) { this.io.changed(); this.broadcast(room); }
-      const err = await applyAction(st, seat, action, async (w) => this.io.invalidWords(w, room.dict ?? DEFAULT_DICT));
+      const err = await applyAction(st, seat, action, async (w) => this.io.invalidWords(w, room.dict ?? DEFAULT_DICT, room.lexicon));
       if (err) return this.io.send(room, seat, { type: 'error', message: err });
       if (st.clock) { clockUpdate(st, this.now()); settleTime(st, this.now()); }
       room.updated = this.now();
@@ -127,7 +131,7 @@ export class Games {
   private start(room: Room) {
     const [a, b] = room.seats;
     room.state = newGame('moyen', { names: [a.name, b!.name] }, {
-      variant: room.variant, theme: room.theme, dict: room.dict, minutes: room.minutes ?? DEFAULT_MINUTES, now: this.now(),
+      variant: room.variant, theme: room.theme, dict: room.dict, lexicon: room.lexicon, minutes: room.minutes ?? DEFAULT_MINUTES, now: this.now(),
     });
     room.updated = this.now();
     this.io.changed();

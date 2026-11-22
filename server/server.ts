@@ -75,7 +75,11 @@ function saveNow() {
 
 const games = new Games({
   send: (room, seat, msg) => sendWs(conns.get(room.code)?.[seat]?.ws, msg),
-  invalidWords: async (ws, dict) => { const set = await loadDict(dict); return ws.filter((w) => !set.has(w)); },
+  invalidWords: async (ws, dict, lex) => {
+    const set = await loadDict(dict);
+    const add = new Set(lex?.add ?? []), remove = new Set(lex?.remove ?? []);
+    return ws.filter((w) => remove.has(w) || !(add.has(w) || set.has(w)));
+  },
   changed: () => { saveTimer ??= setTimeout(saveNow, 1000); },
 });
 try {
