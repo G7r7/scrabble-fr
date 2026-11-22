@@ -84,3 +84,15 @@ describe('mode normal', () => {
     expect(g.players[0].score).toBe(0);
   });
 });
+
+describe('mots restés sur le plateau (révélés en fin de partie)', () => {
+  test('retenus en mode challenge, avec leurs cases, points et auteur ; pas en mode normal', async () => {
+    const g = setup('challenge');
+    await applyAction(g, 0, { type: 'play', placements: chat }, dict(['CHAT']));
+    await applyAction(g, 1, { type: 'accept' }, dict(['CHAT']));
+    expect(g.played).toEqual([{ word: 'CHAT', cells: [[7, 6], [7, 7], [7, 8], [7, 9]], score: g.players[0].score, player: 0 }]);
+    const n = setup(null);
+    await applyAction(n, 0, { type: 'play', placements: chat }, dict([]));
+    expect(n.played).toBeUndefined();
+  });
+});

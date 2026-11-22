@@ -27,7 +27,9 @@ Scrabble en français, à jouer dans le navigateur contre l'ordinateur.
   - **Compétition** : règles de tournoi du [règlement international du Scrabble classique](https://fisf.net/documents/R%C3%A8glement_international_du%20Scrabble_classique.pdf)
     (FISF/FFSc) : pendule de 15, 20, 25 ou 30 minutes par joueur ; on conteste un ou plusieurs mots du coup adverse —
     mot refusé : l'auteur reprend ses lettres et passe ; mot admis : 5 points de pénalité par mot contesté à tort ;
-    le contestataire joue ensuite dans les deux cas. Temps épuisé : le joueur passe systématiquement et son adversaire
+    le contestataire joue ensuite dans les deux cas.
+  - En fin de partie Challenge ou Compétition, les **mots maléfiques** (non valables, mais passés sans contestation)
+    sont démasqués sur le plateau, avec les points qu'ils ont rapportés ; non contestés, ils restent acquis. Temps épuisé : le joueur passe systématiquement et son adversaire
     ne peut plus changer de lettres ; les deux épuisés : fin de partie. Refus de jeu après 3 « je passe » de chacun.
 - Animations (pose des lettres, décompte mot par mot, compteur de points) et sons synthétisés, volume général réglable.
 - **Musique de fond** : le bouton musique passe de « coupée » à **jazz** (swing léger), puis à **classique**, et sa couleur

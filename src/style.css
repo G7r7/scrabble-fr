@@ -858,3 +858,49 @@ button.lx-w { cursor: pointer; }
 .lx-removed summary { cursor: pointer; font-weight: 600; margin-bottom: 6px; }
 .lx-danger { justify-content: flex-start !important; margin-top: 0 !important; }
 .dict-head .btn.small { justify-self: start; margin-top: 6px; }
+
+/* ---------- Fin de partie : les mots maléfiques ---------- */
+.board-wrap.evil-night .board .cell:not(:has(.tile.evil)) { filter: brightness(0.45) saturate(0.4); transition: filter 0.8s; }
+.board .cell { transition: filter 0.8s; }
+.tile.evil {
+  background: linear-gradient(160deg, #3b0a1e, #12020a); color: #ff5470;
+  box-shadow: inset 0 -2px 0 #000, 0 0 10px 2px rgba(220, 20, 60, 0.75);
+  text-shadow: 0 0 6px rgba(255, 60, 90, 0.9);
+}
+.tile.evil sub { color: #ff9aac; }
+.tile.evil-reveal { animation: evil-reveal 0.9s cubic-bezier(0.3, 1.4, 0.5, 1) both; z-index: 3; }
+@keyframes evil-reveal {
+  0% { transform: scale(1); filter: brightness(1); }
+  15% { transform: scale(1.35) rotate(-8deg); filter: brightness(2.2) hue-rotate(-20deg); }
+  30% { transform: scale(1.1) rotate(6deg); }
+  45% { transform: scale(1.2) rotate(-4deg); }
+  60% { transform: scale(1.05) rotate(2deg); }
+  100% { transform: scale(1) rotate(0); filter: brightness(1); }
+}
+.evil-banner {
+  position: absolute; left: 50%; top: 8%; transform: translateX(-50%); z-index: 5; pointer-events: none;
+  display: grid; justify-items: center; gap: 2px; padding: 10px 22px; border-radius: 14px;
+  background: radial-gradient(ellipse at center, rgba(40, 0, 18, 0.95), rgba(10, 0, 6, 0.9));
+  box-shadow: 0 0 30px 6px rgba(200, 0, 50, 0.45); color: #ffd6de; text-align: center;
+  animation: evil-in 0.7s cubic-bezier(0.3, 1.5, 0.5, 1) both;
+}
+.evil-banner span {
+  font: italic 800 clamp(1.4rem, 5cqi, 2.4rem)/1.1 Fraunces, Georgia, serif; letter-spacing: 0.02em;
+  color: #ff4d6d; text-shadow: 0 0 14px rgba(255, 30, 70, 0.9), 0 2px 0 #000;
+}
+.evil-banner small { font: 600 0.8rem/1.2 Inter, system-ui, sans-serif; opacity: 0.85; }
+.evil-banner.out { animation: evil-out 0.6s ease-in forwards; }
+@keyframes evil-in { from { opacity: 0; transform: translate(-50%, -20px) scale(1.4); filter: blur(6px); } to { opacity: 1; transform: translate(-50%, 0) scale(1); filter: none; } }
+@keyframes evil-out { to { opacity: 0; transform: translate(-50%, -10px) scale(0.9); filter: blur(4px); } }
+.fx-float.evil {
+  background: linear-gradient(90deg, #4a0418, #1a0109); color: #ff9aac; border: 1px solid #ff4d6d;
+  box-shadow: 0 0 16px rgba(255, 30, 70, 0.7); font-size: 0.9rem;
+  animation: float-up 1.6s ease-out forwards;
+}
+.end-evil { text-align: left; margin-top: 12px; padding: 10px 12px; border-radius: 12px; border: 1px solid color-mix(in srgb, #dc143c, transparent 55%); background: color-mix(in srgb, #dc143c, transparent 92%); }
+.end-evil h3 { margin: 0 0 6px; font: italic 800 1.05rem/1.2 Fraunces, Georgia, serif; color: #c81e3c; }
+.end-evil ul { margin: 0 0 6px; padding: 0; list-style: none; display: grid; gap: 3px; }
+.end-evil li { display: flex; gap: 6px; align-items: baseline; }
+.end-evil li .pts { margin-left: auto; font-weight: 700; color: #c81e3c; }
+.end-evil p { margin: 0; font-size: 0.82rem; }
+@media (prefers-reduced-motion: reduce) { .tile.evil-reveal, .evil-banner { animation: none; } }

@@ -206,6 +206,17 @@ export class Sound {
     if (t === null) return;
     [88, 91, 95, 100, 103].forEach((n, i) => this.tone(midi(n), t + 0.05 + i * 0.05, 0.25, 'sine', 0.1));
   }
+  /** Mot maléfique démasqué : grondement grave et accord dissonant qui descend. */
+  evil() {
+    const t = this.now();
+    if (t === null) return;
+    const o = this.tone(55, t, 1.2, 'sawtooth', 0.12);
+    o.frequency.exponentialRampToValueAtTime(38, t + 1.1);
+    for (const [n, dt] of [[63, 0], [64, 0.04], [70, 0.08]] as const) {
+      const v = this.tone(midi(n), t + dt, 0.9, 'triangle', 0.1);
+      v.frequency.exponentialRampToValueAtTime(midi(n - 3), t + 0.9);
+    }
+  }
   /** « CHALLENGE ! » : roulement de tambour puis coup de cymbale grave. */
   challenge() {
     const t = this.now();

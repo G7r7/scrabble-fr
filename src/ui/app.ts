@@ -2,7 +2,7 @@ import { BLANK, BONUS, CENTER, RACK_SIZE, SIZE, letterValue } from '../game/cons
 import { evaluatePlacement } from '../game/rules';
 import { shuffle } from '../game/bag';
 import {
-  AI, HARDCORE_PENALTY, HUMAN, VARIANTS, accept, challenge, exchange, loadGame, newGame, pass, playMove, propose, refuse,
+  AI, HARDCORE_PENALTY, HUMAN, type PlayedWord, VARIANTS, accept, challenge, exchange, loadGame, newGame, pass, playMove, propose, refuse,
   saveGame, winnerText, type GameState, type HistoryEntry, type Variant,
 } from '../game/game';
 import type { Action } from '../game/remote';
@@ -740,8 +740,67 @@ export class App {
     this.afterTurn();
   }
 
-  private showEnd() {
+  // ---------- Fin de partie : les mots maléfiques ----------
+
+  /** Cases des mots non valables restés sur le plateau (révélés en fin de partie). */
+  private evilCells = new Set<number>();
+
+  /** Mots acceptés sans contestation mais absents de la liste de la partie. */
+  private async findEvil(): Promise<PlayedWord[]> {
+    const g = this.game;
+    if (!g.played?.length) return [];
+    const invalid = new Set(await this.invalid([...new Set(g.played.map((w) => w.word))]));
+    if (g !== this.game) return [];
+    return g.played.filter((w) => invalid.has(w.word));
+  }
+
+  /** Démasque les mots maléfiques un à un sur le plateau. */
+  private async revealEvil(list: PlayedWord[]) {
+    for (const w of list) for (const [r, c] of w.cells) this.evilCells.add(r * SIZE + c);
+    if (matchMedia('(prefers-reduced-motion: reduce)').matches) { this.render(); return; }
+    const wrap = $(this.root, '.board-wrap');
+    const banner = document.createElement('div');
+    banner.className = 'evil-banner';
+    banner.innerHTML = `<span>☠ Mots maléfiques ☠</span><small>${list.length} mot${list.length > 1 ? 's' : ''} non valable${list.length > 1 ? 's' : ''} passé${list.length > 1 ? 's' : ''} inaperçu${list.length > 1 ? 's' : ''}</small>`;
+    wrap.appendChild(banner);
+    wrap.classList.add('evil-night');
+    await delay(1300);
+    const step = list.length > 6 ? 700 : 1300;
+    for (const w of list.slice(0, 10)) {
+      const tiles = w.cells.map(([r, c]) => (this.el.board.children[r * SIZE + c] as HTMLElement)?.querySelector<HTMLElement>('.tile'))
+        .filter((t): t is HTMLElement => !!t);
+      tiles.forEach((t, i) => { t.style.animationDelay = `${i * 60}ms`; t.classList.add('evil', 'evil-reveal'); });
+      this.sound.evil();
+      const [lr, lc] = w.cells[w.cells.length - 1];
+      const last = (this.el.board.children[lr * SIZE + lc] as HTMLElement)?.getBoundingClientRect();
+      if (last) this.fx.float(`☠ ${w.word} · non valable · +${w.score} pts`, last, 'evil');
+      await delay(step);
+      tiles.forEach((t) => { t.classList.remove('evil-reveal'); t.style.animationDelay = ''; });
+    }
+    await delay(500);
+    banner.classList.add('out');
+    wrap.classList.remove('evil-night');
+    setTimeout(() => banner.remove(), 600);
+  }
+
+  private async showEnd() {
+    const evil = await this.findEvil();
+    if (evil.length) await this.revealEvil(evil);
     const d = $(this.root, '#endDialog');
+    const box = $(d, '#endEvil');
+    const g = this.game;
+    if (evil.length) {
+      const who = (p: number) => (p === this.me ? 'Vous' : this.mode === 'solo' ? 'L’ordinateur' : esc(g.players[p].name));
+      const tot = [0, 1].map((p) => evil.filter((w) => w.player === p).reduce((a, w) => a + w.score, 0));
+      box.innerHTML = `<h3>☠ Mots maléfiques</h3><ul>${evil.map((w) =>
+        `<li><b>${w.word}</b> <span class="muted">— ${who(w.player)}</span><span class="pts">+${w.score}</span></li>`).join('')}</ul>
+        <p class="muted">Points rapportés par des mots non valables : ${[this.me, this.opp].map((p) => `${p === this.me ? 'vous' : who(p)} ${tot[p]}`).join(' · ')}.
+        Non contestés, ils restent acquis.</p>`;
+      box.hidden = false;
+    } else if (g.played) {
+      box.innerHTML = '<p class="muted">Aucun mot maléfique : tous les mots du plateau sont valables.</p>';
+      box.hidden = false;
+    } else box.hidden = true;
     $(d, '#endTitle').textContent = winnerText(this.game, this.me);
     const h = this.game.players[this.me], a = this.game.players[this.opp];
     const other = this.mode === 'solo' ? 'ordinateur' : a.name;
@@ -791,6 +850,7 @@ export class App {
     this.busy = false;
     this.seen = this.game.history.length;
     this.shown = null;
+    this.evilCells.clear();
     $(this.root, '#endDialog').classList.remove('open');
   }
 
@@ -2064,7 +2124,7 @@ export class App {
         const p = pend.get(r * SIZE + c);
         cell.querySelector('.tile')?.remove();
         if (t) cell.insertAdjacentHTML('beforeend', this.tileHtml(t.letter, t.blank,
-          `${last.has(r * SIZE + c) ? 'last' : ''} ${themed.has(r * SIZE + c) ? 'themed' : ''}`));
+          `${last.has(r * SIZE + c) ? 'last' : ''} ${themed.has(r * SIZE + c) ? 'themed' : ''} ${this.evilCells.has(r * SIZE + c) ? 'evil' : ''}`));
         else if (p) cell.insertAdjacentHTML('beforeend', this.tileHtml(p.letter === BLANK ? p.assigned : p.letter, p.letter === BLANK, 'pending', p.id));
         else if (prop.has(r * SIZE + c)) { const q = prop.get(r * SIZE + c)!; cell.insertAdjacentHTML('beforeend', this.tileHtml(q.letter, q.blank, 'proposed')); }
         cell.classList.toggle('target', this.selected !== null && !t && !p && !prop.has(r * SIZE + c));
@@ -2339,6 +2399,7 @@ const TEMPLATE = `
 <div id="listsDialog" class="overlay"><div class="card lists" id="listsBody"></div></div>
 <div id="endDialog" class="overlay"><div class="card">
   <h2 id="endTitle"></h2><p id="endDetail" class="muted"></p>
+  <div id="endEvil" class="end-evil" hidden></div>
   <div class="row"><button class="btn primary" id="endNew">Nouvelle partie</button><button class="btn" id="endClose">Voir le plateau</button></div>
 </div></div>
 `;

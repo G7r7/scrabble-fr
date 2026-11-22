@@ -28,6 +28,9 @@ export interface HistoryEntry {
   challenged?: boolean;
 }
 
+/** Mot resté sur le plateau (modes challenge et compétition), pour démasquer en fin de partie les mots non valables. */
+export interface PlayedWord { word: string; cells: [number, number][]; score: number; player: 0 | 1 }
+
 /** Mode challenge : coup posé, en attente de la décision de l'adversaire. */
 export interface Proposal { player: 0 | 1; move: Move }
 
@@ -51,6 +54,8 @@ export interface GameState {
    * - hardcore : chaque coup est contrôlé d'office ; un mot refusé coûte 10 points et le tour.
    */
   variant?: Variant;
+  /** Modes challenge et compétition : mots acceptés sur le plateau (vérifiés en fin de partie). */
+  played?: PlayedWord[];
   /** Mode compétition : pendule de tournoi. */
   clock?: Clock;
   /** Liste de mots de la partie (absente = liste libre). */
@@ -104,6 +109,9 @@ function nextTurn(s: GameState) {
 export function playMove(s: GameState, move: Move) {
   move = applyTheme(s.theme, move);
   const p = s.players[s.current];
+  if (s.variant === 'challenge' || s.variant === 'tournoi') {
+    (s.played ??= []).push(...move.words.map((w) => ({ word: w.word, cells: w.cells, score: w.score, player: s.current })));
+  }
   removeFromRack(p.rack, move.placements.map((x) => (x.blank ? BLANK : x.letter)));
   applyPlacements(s.board, move.placements);
   p.score += move.score;
