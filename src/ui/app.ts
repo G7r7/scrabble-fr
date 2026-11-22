@@ -1632,7 +1632,16 @@ export class App {
       else if (b?.hasAttribute('data-games')) this.lobby('menu');
     });
     this.el.sfxBtn.addEventListener('click', () => { this.sound.setSfx(!this.sound.sfxOn); this.renderSoundButtons(); this.sound.place(); });
+    // Son bloqué au chargement (règle des navigateurs) : le bouton musique pulse jusqu'au premier toucher.
+    this.sound.onWaiting = () => {
+      this.el.musicBtn.classList.toggle('waiting', this.sound.waitingGesture);
+      if (this.sound.waitingGesture) this.setStatus('Touchez l’écran pour reprendre la musique.');
+      else if (this.el.status.textContent === 'Touchez l’écran pour reprendre la musique.') this.setStatus('');
+    };
+    this.sound.onWaiting();
     this.el.musicBtn.addEventListener('click', () => {
+      // Ce toucher vient de débloquer le son : la musique reprend, sans passer à la suivante.
+      if (performance.now() - this.sound.unlockedAt < 1500) return this.renderSoundButtons();
       const m = this.sound.cycleMusic();
       this.renderSoundButtons();
       this.setStatus(m === 'jazz' ? 'Musique : jazz.' : m === 'classique'

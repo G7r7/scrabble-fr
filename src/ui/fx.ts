@@ -9,6 +9,7 @@ function lsGet(k: string) { try { return localStorage.getItem(k); } catch { retu
 function lsSet(k: string, v: string) { try { localStorage.setItem(k, v); } catch { /* rien */ } }
 
 export type MusicMode = 'off' | 'jazz' | 'classique';
+const JAZZ_POS = 'scrabble-fr-musique-jazz', CATH_POS = 'scrabble-fr-musique-classique';
 
 export class Sound {
   private ctx: AudioContext | null = null;
@@ -27,16 +28,42 @@ export class Sound {
   private music: Music | null = null;
   private cathedral: Cathedral | null = null;
 
+  /** La musique attend un geste de l'utilisateur pour démarrer (règle des navigateurs). */
+  waitingGesture = false;
+  /** Instant où un geste a débloqué le son (le toucher qui débloque ne doit pas aussi changer de musique). */
+  unlockedAt = -Infinity;
+  /** Prévenu quand `waitingGesture` change (pour le bouton musique). */
+  onWaiting: (() => void) | null = null;
+
   constructor() {
-    // Les navigateurs n'autorisent le son qu'après un geste de l'utilisateur.
+    // Au chargement, on reprend le son tel qu'il était : on tente de relancer la musique tout de suite ;
+    // si le navigateur exige d'abord un geste, le premier toucher (n'importe où) la relance.
+    const events = ['pointerdown', 'keydown', 'touchend', 'click'] as const;
     const unlock = () => {
-      this.audio();
-      if (this.musicOn) this.startMusic();
-      window.removeEventListener('pointerdown', unlock);
-      window.removeEventListener('keydown', unlock);
+      const ctx = this.audio();
+      if (!ctx) return;
+      void ctx.resume().then(() => {
+        if (ctx.state !== 'running') return;
+        for (const ev of events) window.removeEventListener(ev, unlock, true);
+        if (this.waitingGesture) this.unlockedAt = performance.now();
+        this.setWaiting(false);
+        if (this.musicOn) this.startMusic();
+      });
     };
-    window.addEventListener('pointerdown', unlock);
-    window.addEventListener('keydown', unlock);
+    for (const ev of events) window.addEventListener(ev, unlock, true);
+    if (this.musicOn) {
+      const ctx = this.audio();
+      if (ctx) {
+        void ctx.resume().then(() => { if (ctx.state === 'running') unlock(); });
+        setTimeout(() => { if (ctx.state !== 'running' && this.musicOn) this.setWaiting(true); }, 400);
+      }
+    }
+  }
+
+  private setWaiting(v: boolean) {
+    if (this.waitingGesture === v) return;
+    this.waitingGesture = v;
+    this.onWaiting?.();
   }
 
   private audio(): AudioContext | null {
@@ -105,11 +132,14 @@ export class Sound {
   private startMusic() {
     const ctx = this.audio();
     if (!ctx) return;
+    if (ctx.state !== 'running') return; // attend le geste de l'utilisateur
+    // Chaque musique reprend là où elle s'était arrêtée (position enregistrée au fil de l'écoute).
+    const load = (k: string) => { try { return JSON.parse(lsGet(k) ?? 'null'); } catch { return null; } };
     if (this.musicMode === 'jazz') {
-      this.music ??= new Music(ctx, this.musicBus);
+      this.music ??= new Music(ctx, this.musicBus, load(JAZZ_POS), (st) => lsSet(JAZZ_POS, JSON.stringify(st)));
       this.music.start();
     } else if (this.musicMode === 'classique') {
-      this.cathedral ??= new Cathedral(ctx, this.musicBus);
+      this.cathedral ??= new Cathedral(ctx, this.musicBus, load(CATH_POS), (st) => lsSet(CATH_POS, JSON.stringify(st)));
       this.cathedral.start();
     }
   }
@@ -278,10 +308,12 @@ class Music {
     81, 79, 77, 74, 79, null, 77, 74, 72, null, 76, null, 79, 74, 71, null,
   ];
 
-  constructor(private ctx: AudioContext, out: GainNode) {
+  constructor(private ctx: AudioContext, out: GainNode, saved?: { step?: number } | null, private save?: (s: { step: number }) => void) {
     this.bus = ctx.createGain();
     this.bus.gain.value = 0;
     this.bus.connect(out);
+    // Reprise au début de la mesure où l'on s'était arrêté.
+    if (saved && Number.isInteger(saved.step) && saved.step! >= 0) this.step = saved.step! - (saved.step! % 8);
   }
 
   start() {
@@ -339,6 +371,7 @@ class Music {
 
       this.next += eighth === 0 ? beat * 0.62 : beat * 0.38;
       this.step++;
+      if (this.step % 8 === 0) this.save?.({ step: this.step % Music.MELODY.length });
     }
   }
 }

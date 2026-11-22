@@ -85,7 +85,16 @@ export class Cathedral {
   private melody = 74;
   private static BEAT = 60 / 52;
 
-  constructor(private ctx: AudioContext, out: AudioNode) {
+  /** Position enregistrée : plan en cours, section, mesure, note du soliste. */
+  static valid(x: unknown): x is { plan: Section[]; sec: number; bar: number; melody: number } {
+    const v = x as { plan?: unknown; sec?: unknown; bar?: unknown; melody?: unknown } | null;
+    return !!v && Array.isArray(v.plan) && v.plan.length > 0 && Number.isInteger(v.sec) && Number.isInteger(v.bar)
+      && (v.sec as number) >= 0 && (v.sec as number) < v.plan.length && typeof v.melody === 'number'
+      && v.plan.every((s) => s && Array.isArray((s as Section).chords) && (s as Section).chords.length === (s as Section).bars);
+  }
+
+  constructor(private ctx: AudioContext, out: AudioNode, saved?: unknown, private save?: (s: unknown) => void) {
+    if (Cathedral.valid(saved)) { this.plan = saved.plan; this.sec = saved.sec; this.bar = saved.bar; this.melody = saved.melody; }
     this.bus = ctx.createGain();
     this.bus.gain.value = 0;
     this.dry = ctx.createGain();
@@ -148,6 +157,7 @@ export class Cathedral {
       this.playBar(s, this.bar, this.next);
       this.bar++;
       this.next += Cathedral.BEAT * 4;
+      this.save?.({ plan: this.plan, sec: this.sec, bar: this.bar, melody: this.melody });
     }
   }
 

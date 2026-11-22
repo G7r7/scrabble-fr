@@ -904,3 +904,7 @@ button.lx-w { cursor: pointer; }
 .end-evil li .pts { margin-left: auto; font-weight: 700; color: #c81e3c; }
 .end-evil p { margin: 0; font-size: 0.82rem; }
 @media (prefers-reduced-motion: reduce) { .tile.evil-reveal, .evil-banner { animation: none; } }
+/* Musique en attente d'un toucher pour reprendre (son bloqué par le navigateur au chargement). */
+#musicBtn.waiting { animation: music-wait 1.6s ease-in-out infinite; }
+@keyframes music-wait { 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--accent), transparent 70%); } }
+@media (prefers-reduced-motion: reduce) { #musicBtn.waiting { animation: none; outline: 2px dashed var(--accent); } }
