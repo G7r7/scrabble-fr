@@ -34,6 +34,7 @@ Scrabble en français, à jouer dans le navigateur contre l'ordinateur.
   - En fin de partie Challenge ou Compétition, les **mots maléfiques** (non valables, mais passés sans contestation)
     sont démasqués sur le plateau, avec les points qu'ils ont rapportés ; non contestés, ils restent acquis. Temps épuisé : le joueur passe systématiquement et son adversaire
     ne peut plus changer de lettres ; les deux épuisés : fin de partie. Refus de jeu après 3 « je passe » de chacun.
+- **Écran toujours allumé** tant que l'appli est affichée (Screen Wake Lock), pour que le téléphone ne se mette pas en veille pendant la réflexion.
 - Animations (pose des lettres, décompte mot par mot, compteur de points) et sons synthétisés, volume général réglable.
 - **Musique de fond** : le bouton musique passe de « coupée » à **jazz** (swing léger), puis à **classique**, et sa couleur
   change avec le choix. La musique classique (`src/ui/cathedral.ts`) est composée à la volée pour accompagner la
