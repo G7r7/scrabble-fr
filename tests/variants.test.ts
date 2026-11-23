@@ -47,14 +47,16 @@ describe('mode challenge', () => {
     expect(g.history.at(-1)).toMatchObject({ kind: 'invalid', player: 0, challenged: true });
   });
 
-  test('challenge raté : le coup compte, le contestataire perd son tour', async () => {
+  test('challenge raté : le coup compte, le contestataire perd 5 points par mot et joue ensuite', async () => {
     const g = setup('challenge');
     await applyAction(g, 0, { type: 'play', placements: chat }, dict([]));
     expect(await applyAction(g, 1, { type: 'challenge' }, dict([]))).toBeNull();
     expect(g.board[7][7]?.letter).toBe('H');
     expect(g.players[0].score).toBeGreaterThan(0);
-    expect(g.current).toBe(0);
+    expect(g.players[1].score).toBe(-5);
+    expect(g.current).toBe(1);
     expect(g.history.map((e) => e.kind)).toEqual(['play', 'challenge']);
+    expect(g.history.at(-1)).toMatchObject({ player: 1, score: -5 });
   });
 });
 

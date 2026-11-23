@@ -22,9 +22,9 @@ Scrabble en français, à jouer dans le navigateur contre l'ordinateur.
   absents de la liste choisie, jargon compris (LOLOTTE, OLLIE, DUNK, PANENKA…). Source : `scripts/themes-src.mjs`.
 - **Quatre modes de jeu** :
   - **Normal** : les mots sont vérifiés avant d'être joués ;
-  - **Challenge** : aucune vérification avant de jouer. L'adversaire accepte le coup ou le conteste
-    (« CHALLENGE ! ») : si le mot est refusé, le coup est annulé et son auteur perd son tour ;
-    sinon le coup compte et c'est celui qui a contesté qui perd son tour ;
+  - **Challenge** : aucune vérification avant de jouer. L'adversaire accepte le coup ou en conteste un ou plusieurs
+    mots (« CHALLENGE ! ») : mot refusé, le coup est annulé et son auteur passe ; mot admis, le coup compte et le
+    contestataire perd 5 points par mot contesté à tort. Comme en compétition, le contestataire joue ensuite ;
   - **Hardcore** : chaque coup est contrôlé d'office ; un mot refusé coûte 10 points, les lettres reviennent
     sur le chevalet et le tour est perdu.
   - **Compétition** : règles de tournoi du [règlement international du Scrabble classique](https://fisf.net/documents/R%C3%A8glement_international_du%20Scrabble_classique.pdf)

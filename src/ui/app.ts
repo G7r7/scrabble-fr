@@ -561,16 +561,12 @@ export class App {
     const odds = invalid.length
       ? { facile: 0.5, moyen: 0.8, difficile: 1 }[g.level]
       : { facile: 0.1, moyen: 0.04, difficile: 0 }[g.level];
-    if (g.variant === 'tournoi' && Math.random() < odds) {
-      // Compétition : il conteste les mots qu'il croit faux (ou, parfois, un mot juste… et paie 5 points).
+    if (Math.random() < odds) {
+      // Il conteste les mots qu'il croit faux (ou, parfois, un mot juste… et paie 5 points).
       const contested = invalid.length ? invalid : [p.move.words[0].word];
       challenge(g, invalid, contested);
       this.setStatus(invalid.length ? `L’ordinateur conteste ${invalid.join(', ')}… à raison : vos lettres reviennent, vous passez.`
         : `L’ordinateur conteste ${contested[0]} à tort : vous marquez ${this.lastPlayScore()} points et il perd ${WRONG_CHALLENGE_PENALTY} points.`, !!invalid.length);
-    } else if (g.variant !== 'tournoi' && Math.random() < odds) {
-      challenge(g, invalid);
-      this.setStatus(invalid.length ? 'L’ordinateur conteste… et il a raison ! Vous perdez votre tour.'
-        : `L’ordinateur conteste… à tort ! Vous marquez ${this.lastPlayScore()} points et il perd son tour.`, !!invalid.length);
     } else {
       accept(g);
       this.setStatus(`L’ordinateur accepte : vous marquez ${this.lastPlayScore()} points.`);
@@ -597,14 +593,10 @@ export class App {
     if (g !== this.game || g.proposal !== p) return;
     challenge(g, invalid, contested);
     const wrong = contested.length - invalid.length;
-    if (g.variant === 'tournoi') {
-      this.setStatus(invalid.length
-        ? `Contestation réussie : ${invalid.join(', ')} refusé — l’ordinateur reprend ses lettres.${wrong ? ` Mais −${wrong * WRONG_CHALLENGE_PENALTY} points pour les mots contestés à tort.` : ''} À vous.`
-        : `Contestation à tort : −${wrong * WRONG_CHALLENGE_PENALTY} points. À vous de jouer.`, !invalid.length);
-    } else {
-      this.setStatus(invalid.length ? 'Challenge réussi ! L’ordinateur perd son tour.'
-        : `Challenge raté : le coup est valide, vous perdez votre tour.`, !invalid.length);
-    }
+    const [won, lost] = g.variant === 'tournoi' ? ['Contestation réussie', 'Contestation à tort'] : ['Challenge réussi', 'Challenge raté'];
+    this.setStatus(invalid.length
+      ? `${won} : ${invalid.join(', ')} refusé — l’ordinateur reprend ses lettres.${wrong ? ` Mais −${wrong * WRONG_CHALLENGE_PENALTY} points pour les mots contestés à tort.` : ''} À vous.`
+      : `${lost} : −${wrong * WRONG_CHALLENGE_PENALTY} points. À vous de jouer.`, !invalid.length);
     this.afterTurn();
   }
 
@@ -628,13 +620,10 @@ export class App {
       const words = refused ? judged.text.replace(/^[^:]*:\s*/, '').replace(/\s*—.*$/, '').split(/,\s*/)
         : (g.lastWords ?? []).map((w) => w.word);
       const penalty = -(fresh.find((e) => e.kind === 'challenge')?.score ?? 0);
-      const detail = g.variant === 'tournoi'
-        ? (refused
-          ? `${judged.player === this.me ? 'Votre coup est annulé' : `Le coup de ${name(judged.player)} est annulé`}${penalty ? ` · ${challenger === this.me ? 'vous' : name(challenger)} : −${penalty} pts pour un mot contesté à tort` : ''}.`
-          : `Contestation à tort : ${challenger === this.me ? 'vous perdez' : `${name(challenger)} perd`} ${penalty} points.`)
-        : refused
-        ? (judged.player === this.me ? 'Challenge réussi contre vous : votre coup est annulé.' : `Challenge réussi : le coup de ${name(judged.player)} est annulé.`)
-        : (challenger === this.me ? 'Challenge raté : vous perdez votre tour.' : `Challenge raté : ${name(challenger)} perd son tour.`);
+      const lost = g.variant === 'tournoi' ? 'Contestation à tort' : 'Challenge raté';
+      const detail = refused
+        ? `${judged.player === this.me ? 'Votre coup est annulé' : `Le coup de ${name(judged.player)} est annulé`}${penalty ? ` · ${challenger === this.me ? 'vous' : name(challenger)} : −${penalty} pts pour un mot contesté à tort` : ''}.`
+        : `${lost} : ${challenger === this.me ? 'vous perdez' : `${name(challenger)} perd`} ${penalty} points.`;
       stamp = this.scene.play(refused ? 'invalid' : 'valid', words, detail, g.history.length);
       wait = this.scene.duration;
     }
@@ -671,7 +660,7 @@ export class App {
     const what = theirs.kind === 'play' ? `${who} joue ${theirs.text} pour ${theirs.score} points.`
       : theirs.kind === 'exchange' ? `${who} échange des lettres.`
       : theirs.kind === 'invalid' ? `${who} : ${lcFirst(theirs.text)}.`
-      : theirs.kind === 'challenge' ? (g.variant === 'tournoi' ? `${who} a contesté à tort (${theirs.score} points).` : `${who} a contesté à tort et perd son tour.`)
+      : theirs.kind === 'challenge' ? `${who} a contesté à tort (${theirs.score} points).`
       : `${who} passe son tour.`;
     void this.notifier.show('À vous de jouer !', what, 'tour');
   }
@@ -823,9 +812,9 @@ export class App {
     if (e.kind === 'invalid') return e.challenged
       ? (mine ? `${won} contre vous. ${e.text}.` : `${won} ! ${name} : ${lcFirst(e.text)}.`)
       : (mine ? `${e.text}.` : `${name} : ${lcFirst(e.text)}.`);
-    if (e.kind === 'challenge') return this.game.variant === 'tournoi'
-      ? (mine ? `Contestation à tort : ${-e.score} points de pénalité.` : `${name} a contesté à tort : ${-e.score} points de pénalité.`)
-      : mine ? 'Challenge raté : le mot était bon, vous perdez votre tour.' : `${name} a contesté à tort et perd son tour.`;
+    if (e.kind === 'challenge') return mine
+      ? `${this.game.variant === 'tournoi' ? 'Contestation à tort' : 'Challenge raté'} : ${-e.score} points de pénalité.`
+      : `${name} a contesté à tort : ${-e.score} points de pénalité.`;
     return '';
   }
 
@@ -1465,10 +1454,10 @@ export class App {
       else if (a === 'pass') this.doPass();
       else if (a === 'accept') void this.respond('accept');
       else if (a === 'challenge') {
-        // Compétition : on choisit les mots contestés (5 points par mot contesté à tort).
+        // On choisit les mots contestés (5 points par mot contesté à tort).
         const words = this.game.proposal?.move.words.map((w) => w.word) ?? [];
-        if (this.game.variant === 'tournoi' && words.length > 1) { this.contestSel = new Set(words); this.render(); }
-        else void this.respond('challenge', this.game.variant === 'tournoi' ? words : undefined);
+        if (words.length > 1) { this.contestSel = new Set(words); this.render(); }
+        else void this.respond('challenge', words);
       } else if (a === 'contest' && this.contestSel?.size) void this.respond('challenge', [...this.contestSel]);
       else if (a === 'contest-cancel') { this.contestSel = null; this.render(); }
     });

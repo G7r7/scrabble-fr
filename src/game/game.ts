@@ -11,7 +11,7 @@ import { newClock, WRONG_CHALLENGE_PENALTY, type Clock } from './clock';
 export type Variant = 'challenge' | 'hardcore' | 'tournoi';
 export const VARIANTS: { id: Variant | 'normal'; label: string; help: string }[] = [
   { id: 'normal', label: 'Normal', help: 'Les mots sont vérifiés avant d’être joués.' },
-  { id: 'challenge', label: 'Challenge', help: 'Aucune vérification avant de jouer : l’adversaire accepte le coup ou le conteste.' },
+  { id: 'challenge', label: 'Challenge', help: 'Aucune vérification avant de jouer : l’adversaire accepte le coup ou conteste des mots, 5 points de pénalité par mot contesté à tort.' },
   { id: 'hardcore', label: 'Hardcore', help: 'Chaque coup est contrôlé d’office : un mot refusé coûte 10 points et le tour.' },
   { id: 'tournoi', label: 'Compétition', help: 'Règles de tournoi (FISF) : pendule pour chaque joueur, contestation des mots, 5 points de pénalité par mot contesté à tort.' },
 ];
@@ -203,32 +203,15 @@ export function accept(s: GameState) {
 }
 
 /**
- * L'adversaire conteste le coup proposé. `invalid` : mots refusés par le dictionnaire.
- * Challenge réussi : le coup est annulé et son auteur perd son tour.
- * Challenge raté : le coup compte et c'est celui qui a contesté qui perd son tour.
+ * L'adversaire conteste le coup proposé (modes Challenge et Compétition, règlement de tournoi § 3.5.3).
+ * `invalid` : mots refusés par le dictionnaire parmi `contested` (par défaut, tous les mots du coup).
+ * Si un mot contesté est refusé, l'auteur reprend ses lettres et passe ; chaque mot contesté à tort coûte
+ * 5 points au contestataire ; dans tous les cas, c'est ensuite au contestataire de jouer.
  */
 export function challenge(s: GameState, invalid: string[], contested?: string[]) {
   const p = s.proposal;
   if (!p) throw new Error('Aucun coup à contester');
-  if (s.variant === 'tournoi') return challengeTournoi(s, invalid, contested ?? p.move.words.map((w) => w.word));
-  s.proposal = null;
-  if (invalid.length) return refuse(s, invalid);
-  playMove(s, p.move);
-  for (let i = s.history.length - 1; i >= 0; i--) {
-    if (s.history[i].kind === 'play') { s.history[i].challenged = true; break; }
-  }
-  if (s.over) return;
-  s.history.push({ player: s.current, kind: 'challenge', score: 0, challenged: true, text: 'Challenge raté — tour perdu' });
-  nextTurn(s);
-}
-
-/**
- * Contestation selon le règlement de tournoi (§ 3.5.3) : si un mot contesté est refusé, l'auteur reprend ses
- * lettres et passe ; chaque mot contesté à tort coûte 5 points au contestataire ; dans tous les cas, c'est
- * ensuite au contestataire de jouer (il ne perd pas son tour).
- */
-function challengeTournoi(s: GameState, invalid: string[], contested: string[]) {
-  const p = s.proposal!;
+  contested ??= p.move.words.map((w) => w.word);
   const challenger: 0 | 1 = p.player === 0 ? 1 : 0;
   const wrong = contested.filter((w) => !invalid.includes(w)).length;
   s.proposal = null;
