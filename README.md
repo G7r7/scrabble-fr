@@ -17,6 +17,9 @@ Scrabble en français, à jouer dans le navigateur contre l'ordinateur.
     contiennent votre place ; l'appareil précédent est déconnecté. « Quitter » abandonne la partie pour de bon.
 - **Un seul bouton « Nouvelle partie »** : on y choisit l'adversaire (l'ordinateur et son niveau, ou quelqu'un en ligne),
   le mode, la liste de mots et le thème ; les réglages sont retenus pour la fois suivante.
+- **Thèmes** (Films/livres/musique, Jeux vidéo, Sports, Plantes & animaux, Médecine) : les mots du thème rapportent
+  double, verbes conjugués à tous les temps simples compris. Dans une partie à thème, ces mots sont valides même
+  absents de la liste choisie, jargon compris (LOLOTTE, OLLIE, DUNK, PANENKA…). Source : `scripts/themes-src.mjs`.
 - **Quatre modes de jeu** :
   - **Normal** : les mots sont vérifiés avant d'être joués ;
   - **Challenge** : aucune vérification avant de jouer. L'adversaire accepte le coup ou le conteste
@@ -53,11 +56,8 @@ Chaque partie se joue avec une liste au choix (fenêtre « Nouvelle partie »). 
 | Complète | ≈ 408 000 | Lexique des formes fléchies de [Grammalecte](https://grammalecte.net/) 7.7 | MPL 2.0 |
 | Étendue | ≈ 644 000 | [Morphalou 3.1](https://www.ortolang.fr/market/lexicons/morphalou) (ATILF / CNRS) | LGPL-LR |
 
-**Listes perso** (panneau Dictionnaire, « Voir les listes, créer ma liste perso… ») : on parcourt chaque liste
-(recherche par début de mot, ou par motif avec `?` pour une lettre et `*` pour une suite, filtre par longueur), et on
-crée sa propre liste à partir de l'une d'elles, en ajoutant ou retirant des mots. Seul le modèle et les différences
-sont enregistrés, dans le navigateur (IndexedDB) ; une partie garde de même ce résumé, figé au départ, plutôt que la
-liste entière. Le serveur arbitre ainsi les parties en ligne jouées avec une liste perso (2 000 changements au plus).
+**Listes de mots** (panneau Dictionnaire, « Voir les listes de mots… ») : on parcourt chaque liste (recherche par
+début de mot, ou par motif avec `?` pour une lettre et `*` pour une suite, filtre par longueur).
 
 Les accents sont retirés ; noms propres, sigles, mots composés et locutions sont écartés. Les mots de deux lettres
 suivent partout la liste usuelle du Scrabble francophone. Les listes dérivées (`public/dict/fr-*.txt`) restent

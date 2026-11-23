@@ -1,28 +1,28 @@
-// Stockage local (IndexedDB) du fichier ODS importé et des listes perso : rien ne quitte le navigateur.
+// Stockage local (IndexedDB) du fichier ODS importé : il ne quitte jamais le navigateur.
 const DB = 'scrabble-fr', STORE = 'dict', KEY = 'ods';
 
 export interface StoredDict { name: string; count: number; text: string }
 
-/** Listes perso (modèle + mots ajoutés et retirés), elles aussi gardées dans le navigateur. */
-export const LISTS = 'listes';
+/** Ancien magasin des listes perso (supprimées) : effacé à la mise à jour de la base. */
+const OLD_LISTS = 'listes';
 
 function open(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB, 2);
+    const req = indexedDB.open(DB, 3);
     req.onupgradeneeded = () => {
       const db = req.result;
       if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE);
-      if (!db.objectStoreNames.contains(LISTS)) db.createObjectStore(LISTS, { keyPath: 'id' });
+      if (db.objectStoreNames.contains(OLD_LISTS)) db.deleteObjectStore(OLD_LISTS);
     };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
   });
 }
 
-export async function tx<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest, store = STORE): Promise<T> {
+async function tx<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest): Promise<T> {
   const db = await open();
   return new Promise<T>((resolve, reject) => {
-    const req = fn(db.transaction(store, mode).objectStore(store));
+    const req = fn(db.transaction(STORE, mode).objectStore(STORE));
     req.onsuccess = () => resolve(req.result as T);
     req.onerror = () => reject(req.error);
   });

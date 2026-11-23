@@ -17,6 +17,7 @@ export const THEMES = {
     alto contrebasse harpe flute flutiste clarinette hautbois basson saxophone trompette trombone tuba cor accordeon harmonica
     orgue organiste ukulele banjo mandoline tambour tambourin xylophone triangle cymbale micro ampli enceinte casque
     compositeur composer chanter danser jouer lire ecrire filmer tourner rimer slam slameur karaoke ritournelle mélomane
+    lis lit lisons lisez lisent lu lue lus lues lisais lisait lisant lirai lira liront ecris ecrit ecrivons ecrivez ecrivent ecrite ecrits ecrites ecrivais ecrivait ecrivant ecrirai ecrira ecriront
     melomane diva tenor soprano baryton basse virtuose maestro repertoire spectacle theatre comedien comedienne rideau
     coulisse loge applaudir applaudissement rappel bis ovation public spectateur entracte`,
   jeux: `jeu jeux joueur joueuse partie manette console clavier souris ecran pixel pixels sprite niveau niveaux monde boss
@@ -34,24 +35,113 @@ export const THEMES = {
     gachette vibration graphisme moteur physique collision hitbox lag bug patch mise mod tricheur triche astuce soluce
     speedrun streamer stream partie revanche victoire defaite egalite manche round vague horde survie zone carte boussole
     radar teleporteur portail checkpoint`,
-  sports: `sport sportif sportive athlete champion championne championnat coupe medaille or argent bronze podium record
-    match equipe joueur joueuse entraineur coach arbitre sifflet carton penalty corner but buteur gardien defenseur attaquant
-    milieu ailier capitaine maillot short crampon chaussure ballon balle filet poteau barre terrain stade piste tribune
-    supporter supporteur public score victoire defaite nul egalite prolongation mitemps temps chrono chronometre course
-    coureur sprint sprinteur marathon marathonien relais haie haies saut sauteur perche hauteur longueur lancer poids
-    disque javelot marteau decathlon heptathlon triathlon pentathlon football foot rugby essai melee touche transformation
-    basket panier dunk tennis raquette service ace set jeu volley smash handball hockey crosse palet patin patinage
-    patineur ski skieur slalom descente piste remontee snowboard luge bobsleigh biathlon natation nageur nageuse brasse crawl
-    papillon dos plongeon plongeur bassin piscine water polo aviron rameur kayak canoe voile voilier regate surf surfeur
-    planche vague cyclisme cycliste velo peloton maillot etape echappee col grimpeur sprint boxe boxeur ring gant uppercut
-    crochet direct round knockout judo judoka karate karateka kimono ceinture tatami lutte lutteur escrime escrimeur epee
-    fleuret sabre golf golfeur green trou club caddie handicap parcours equitation cavalier cheval obstacle galop trot
-    gymnastique gymnaste poutre barres anneaux cheval saut sol trampoline escalade grimpeur prise corde baudrier mousqueton
-    marche randonnee alpinisme sommet tir arc archer cible fleche flechette petanque boule cochonnet billard queue bowling
-    quille strike badminton volant pingpong tennis table squash sprint entrainement echauffement etirement musculation
-    haltere halteres poids abdos pompe endurance vitesse force souplesse agilite tactique strategie olympiade olympique
-    jeux dopage blessure kine vestiaire douche gourde sueur effort victoire champion finale demi quart huitieme poule
-    qualification eliminatoire`,
+  sports: `sport sports sportif sportive sportivite athlete athletisme champion championne championnat coupe medaille
+    medaille medaillee or argent bronze podium record recordman recordwoman titre titree trophee palmares match equipe
+    joueur joueuse entraineur entraineuse coach arbitre arbitrage sifflet carton penalty corner but buteur buteuse
+    gardien gardienne goal goaleur goaler defenseur attaquant attaquante milieu ailier capitaine maillot short crampon
+    chaussure basket ballon balle filet poteau barre transversale lucarne terrain stade piste tribune gradin pelouse gazon
+    supporter supporteur supportrice ultra kop public score victoire defaite nul egalite prolongation mitemps temps chrono
+    chronometre chronometreur course coureur coureuse sprint sprinteur sprinteuse marathon marathonien marathonienne relais
+    relayeur temoin haie haies saut sauteur sauteuse perche perchiste hauteur longueur triple lancer lanceur lanceuse
+    poids disque discobole javelot marteau decathlon decathlonien heptathlon heptathlonienne triathlon triathlete
+    duathlon pentathlon biathlon biathlete steeple cross crossman jogging joggeur footing trail traileur demifond fondeur
+    football foot footballeur footballeuse futsal soccer rugby rugbyman rugbymen rugbywoman ovalie essai melee touche
+    transformation drop basketball basketteur basketteuse panier dunk tennis tennisman tenniswoman raquette service ace
+    set jeu volley volleyball volleyeur volleyeuse beachvolley smash handball handballeur handballeuse hockey hockeyeur
+    hockeyeuse crosse lacrosse palet patin patinage patineur patineuse patinoire ski skieur skieuse slalom slalomeur
+    descente descendeur remontee snowboard snowboardeur luge lugeur bobsleigh bob skeleton curling natation nageur
+    nageuse brasse crawl papillon dos plongeon plongeur plongeuse plongee apnee apneiste bassin piscine waterpolo aviron
+    rameur rameuse kayak kayakiste canoe canoeiste rafting voile voilier navigateur navigatrice regate regatier surf
+    surfeur surfeuse bodyboard windsurf kitesurf wakeboard planche vague cyclisme cycliste velo vtt bmx peloton etape
+    echappee col grimpeur grimpeuse boxe boxeur boxeuse ring gant uppercut crochet direct round knockout judo judoka
+    karate karateka kimono ceinture tatami lutte lutteur lutteuse sumo sumotori catch catcheur catcheuse escrime
+    escrimeur escrimeuse epee epeiste fleuret fleurettiste sabre sabreur golf golfeur golfeuse green trou club caddie
+    handicap parcours equitation cavalier cavaliere cheval obstacle galop trot gymnastique gymnaste gym poutre barres
+    anneaux sol trampoline escalade varappe grimpe prise corde baudrier mousqueton marche marcheur randonnee randonneur
+    alpinisme alpiniste sommet tir tireur archer archere archerie arc cible fleche flechette petanque boule bouliste
+    cochonnet billard queue bowling quille strike badminton volant pingpong table squash padel pelote jokari polo
+    baseball softball cricket rugby entrainement echauffement etirement musculation halterophilie halterophile haltere
+    abdos pompe endurance vitesse force souplesse agilite tactique strategie olympiade olympique olympisme paralympique
+    jeux dopage dope blessure claquage elongation entorse kine vestiaire douche gourde sueur effort finale finaliste
+    demi demifinale quart huitieme poule qualification qualifie eliminatoire elimination
+    taekwondo aikido jujitsu kungfu kendo savate kickboxing capoeira sambo pancrace grappling
+    parapente parachutisme parachutiste deltaplane speleologie speleologue canyoning orientation skateboard skate
+    skateur roller rolleur trottinette motocross motocycliste karting kart rallye pilote formule enduro trial
+    culturisme culturiste bodybuilding crossfit fitness aerobic yoga pilates stretching gainage cardio
+    hippisme hippodrome turf jockey dressage jumping rodeo joute jouteur ultimate frisbee korfball tchoukball netball
+    hurling croquet snooker billes flechettes cerfvolant ulm montgolfiere bobeur
+    goleador doublé triple hattrick derby clasico mercato transfert remplacant titulaire selection selectionneur
+    selectionne international internationale licence licencie amateur professionnel pro competition competiteur
+    competitrice concurrent concurrente adversaire rival rivalite favori favorite outsider tocard challenger tenant
+    cador crack champ pointure pepite poulain espoir veteran recrue debutant
+    tacle dribble dribbleur feinte crochet pont petitpont grandpont sombrero talonnade madjer roulette rateau
+    contrepied lob volee reprise tete ciseau retourne retournee bicyclette scorpion frappe enroule boulet missile pruneau
+    petard pion caviar offrande galette amorti controle deviation centre centreur passe passeur passeuse mur faute
+    simulation expulsion avertissement horsjeu engagement renvoi degagement surface pressing marquage libero stoppeur
+    lateral avantcentre meneur buteur pichichi renard boucher chevre bourrin gratteur
+    raffut cadrage debordement plaquage plaqueur cuillere cravate ruck maul talonneur pilier flanker ouvreur arriere
+    troisquarts pack avants chandelle chistera percee grattage marque mark enbut botteur haka ovale
+    coupdroit revers demivolee passing lift slice amortie let doublefaute avantage break debreak tiebreak couloir
+    filet terrebattue tamis cordage grip bagel ramasseur chelem
+    layup alleyoop rebond contre interception raquette panneau cercle airball buzzer pivot meneuse shoot shooteur
+    shooteuse playoff playoffs draft franchise
+    manchette reception receptionneur bloc block contreur
+    jab swing esquive garde clinch knockdown soigneur gong reprise sparring punchingball pancho punch puncheur groggy
+    tapis eponge plume mouche coq welter cogneur pugiliste pugilat bourrepif marron beigne gnon mandale torgnole
+    chataigne pain pêche patate
+    spare gouttiere split
+    bille bande blouse carambolage masse retro effet coule procede craie casse
+    pointeur pointeuse tireur carreau biberon fanny mene doublette triplette bouchon plombee portee rafle sautee
+    birdie eagle albatros par bogey putt putter drive driver fer bois wedge approche chip swing hook fade fairway rough
+    bunker drapeau tee depart divot practice links
+    schuss godille chasseneige christiania stem virage geant supergeant combine piquet porte tremplin freestyle bosses
+    halfpipe poudreuse horspiste dameuse teleski telesiege perche forfait fartage fart carre spatule fixation baton
+    moniteur monitrice skating
+    gruppetto bordure rouleur puncheur baroudeur domestique equipier equipiere leader lanterne voiturebalai bidon
+    musette ravitaillement braquet derailleur plateau pignon cadre guidon selle roue boyau crevaison chute contrelamontre
+    prologue ascension cote danseuse fringale defaillance grimpette
+    lineup spot takeoff cutback tube floater aerial reef swell houle glisse wipeout leash wax combinaison longboard
+    shortboard derive rail goofy regular deferlante rouleau lip
+    ollie kickflip grind slide rampe bowl rider ride trick
+    bord bordee tribord babord foc genois spi spinnaker grandvoile misaine ecoute drisse halebas winch taquet bome mat
+    etai hauban safran gouvernail barreur skipper bouee pres largue travers cap cape deriveur quillard catamaran
+    trimaran monocoque multicoque optimist chavirage dessalage gite ris empannage virement abattee risee petole quille
+    lest louvoyage
+    oxer vertical riviere refus derobade barrage piaffer passage volte pirouette cravache eperon mors bride renes etrier
+    sangle licol box paddock haras ecurie palefrenier lad tierce quarte quinte trotteur galopeur casaque poney pursang
+    parade riposte fente attaque contreattaque remise redoublement botte battement assaut tireuse plastron masque lame
+    coquille pointe estoc bretteur duelliste degagement
+    ippon wazari yuko judogi dan kyu dojo sensei kata kumite randori uke tori kiai ukemi projection etranglement
+    immobilisation balayage hakama shinai bokken keikogi
+    startingblock fauxdepart corde sautoir elan appel impulsion fosse butoir dossard pointes minima serie repechage
+    photofinish
+    culbute coulee plot bonnet lunettes palme pullbuoy battement ondulation quatrenages naglibre
+    barrefixe asymetriques paralleles arcons salto vrille flip flicflac rondade roue poirier pont ecart enchainement
+    magnesie justaucorps ruban cerceau massue tumbling
+    developpe squat traction dips pecs biceps triceps quadriceps mollets repetition charge fonte kettlebell gonflette
+    voie dalle devers surplomb reglette bac pince dyno jete coincement rappel assureur degaine chausson relais
+    moulinette flash cotation falaise crux
+    mise slapshot echec cinglage accrochage surfaceuse bande prison
+    batte batteur receveur frappeur homerun base marbre monticule manche retrait guichet bowler inning
+    raclee piquette deculottee fessee rouste tannee patee valise derouillee correction branlee tole dérouillée volee
+    remontada perf perfs exploit miracle invaincu leader dauphin lanterne
+    lolotte
+    cours court courons courez courent couru courue courus courues courais courait courions couriez couraient courant
+    courrai courras courra courrons courrez courront courrais courrait courrions courriez courraient
+    sers sert servons servez servent servi servie servis servies servais servait servions serviez servaient servant
+    servirai serviras servira servirons servirez serviront servirais servirait servirions serviriez serviraient
+    bats bat battons battez battent battu battue battus battues battais battait battions battiez battaient battant
+    battrai battras battra battrons battrez battront battrais battrait battrions battriez battraient
+    combats combat combattons combattez combattent combattu combattue combattus combattues combattais combattait
+    combattant combattrai combattra combattrons combattront combattrait
+    abats abat abattons abattez abattent abattu abattue abattus abattues abattais abattait abattant abattra
+    perds perd perdons perdez perdent perdu perdue perdus perdues perdais perdait perdions perdiez perdaient perdant
+    perdrai perdras perdra perdrons perdrez perdront perdrais perdrait perdrions perdriez perdraient
+    defends defend defendons defendez defendent defendu defendue defendus defendues defendais defendait defendant
+    defendrai defendra defendrons defendront defendrait
+    vaincs vainc vainquons vainquez vainquent vaincu vaincue vaincus vaincues vainquais vainquait vainquant vaincrai
+    vaincra vaincrons vaincront vaincrait
+    bondissons bondissez rebondis rebondit rebondissons rebondissez rebondissent rebondi rebondissant rebondira`,
   nature: `plante fleur arbre arbuste buisson herbe gazon mousse fougere feuille tige racine branche tronc ecorce bourgeon
     graine pepin noyau fruit petale pistil etamine pollen seve rose tulipe lys iris jonquille narcisse marguerite paquerette
     coquelicot bleuet violette pensee orchidee lavande jasmin lilas muguet tournesol pivoine dahlia hortensia magnolia
@@ -95,3 +185,60 @@ export const THEMES = {
     prescrire hospitaliser reanimation reanimer secours secouriste defibrillateur oxygene sante bilan consultation
     visite rendez vous mutuelle carte vitale`,
 };
+
+// Verbes des thèmes : `npm run themes` ajoute leurs formes conjuguées présentes dans les listes du jeu.
+export const VERBS = {
+  culture: `composer chanter fredonner chantonner siffloter danser valser swinguer jouer interpreter improviser accorder
+    enregistrer mixer sampler rapper slammer filmer tourner cadrer zoomer doubler realiser projeter diffuser
+    raconter narrer illustrer dessiner editer publier rimer versifier declamer reciter repeter applaudir ovationner
+    bisser orchestrer arranger harmoniser accompagner critiquer feuilleter bouquiner adapter scenariser jongler
+    mimer costumer maquiller grimer`,
+  jeux: `jouer gagner tricher miser parier bluffer relancer distribuer piocher defausser roquer mater echanger deplacer
+    lancer sauvegarder charger recharger crafter looter farmer ameliorer debloquer explorer invoquer ensorceler
+    enchanter soigner teleporter piloter deraper doubler accelerer viser tirer cliquer zapper sauter courir grimper
+    nager voler esquiver bloquer attaquer equiper pirater camper sniper streamer bugger`,
+  nature: `fleurir germer bourgeonner eclore polliniser butiner planter semer arroser tailler elaguer greffer
+    recolter jardiner becher sarcler desherber faner fletrir pourrir ramper nager voler chasser brouter ruminer
+    hiberner migrer nicher couver muer chanter gazouiller roucouler croasser hululer barrir rugir hurler aboyer miauler
+    ronronner meugler beler hennir grogner glapir bourdonner piquer griffer galoper trotter fouir terrer fretiller
+    onduler pepier jacasser coasser feuler bramer blaterer siffler`,
+  medecine: `guerir soigner operer vacciner ausculter diagnostiquer hospitaliser reanimer panser suturer platrer
+    perfuser injecter piquer transfuser anesthesier inciser amputer greffer transplanter radiographier scanner
+    examiner palper tousser eternuer saigner vomir cicatriser infecter contaminer desinfecter steriliser immuniser
+    doser soulager apaiser masser reeduquer consulter traiter intuber ventiler dialyser accoucher plomber detartrer
+    bander opérer medicaliser`,
+  sports: `lancer boxer sauter courir surfer nager plonger ramer souquer pagayer skier patiner glisser grimper escalader
+    varapper pedaler sprinter marcher randonner trotter galoper chevaucher tirer viser shooter frapper dribbler centrer
+    tacler marquer scorer arbitrer siffler plaquer raffuter transformer botter dropper buter degager servir smasher
+    volleyer lober lifter slicer contrer bloquer intercepter attaquer defendre feinter esquiver parer riposter
+    ferrailler fleuretter lutter combattre cogner encaisser boxer crocheter jongler dunker rebondir bondir franchir
+    accelerer doubler depasser devancer distancer echapper gagner perdre vaincre battre triompher egaliser qualifier
+    eliminer disqualifier entrainer echauffer etirer muscler soulever crawler slalomer luger godiller schusser farter
+    doper chronometrer homologuer selectionner recruter transferer coacher supporter encourager applaudir huer pointer
+    bouler plomber jeter receptionner amortir controler jouer barrer border choquer virer empanner louvoyer lofer
+    abattre chavirer dessaler hisser affaler naviguer regater putter driver golfer ruer cabrer refuser derober
+    assurer mousquetonner enchainer aplatir percer deborder cadrer projeter immobiliser etrangler balayer chuter
+    patiner rider skater planer voltiger pirouetter culbuter relancer crever abandonner surclasser terrasser etriller
+    laminer atomiser dominer craquer flancher coiffer remonter mener devancer goaler arbitrer chronometrer
+    escrimer jogger courser pister sprinter ramer`,
+};
+
+// Jargon absent des listes du jeu, accepté quand même dans une partie du thème (avec pluriels en -S ;
+// les verbes avec toutes leurs conjugaisons).
+export const JARGON = {
+  sports: {
+    words: `lolotte ollie nollie kickflip heelflip grind slide dunk slamdunk layup alleyoop crossover fadeaway padel
+      panenka madjer pichichi hattrick petitpont grandpont horsjeu chabala roucoulette kempa wazari ruck tiebreak
+      debreak topspin flicflac sparring jab dyno dulfer divot gennaker windsurf wakeboard freeride shortboard
+      longboard lineup wipeout floater leash swell bowl skatepark trailer traileur bodyboardeur snowboardeur kitesurfeur
+      contreur blocker spinner`,
+    verbs: `lolotter dunker sparrer jabber kiter grinder crimper puncher chipper bourriner carreauter mousquetonner
+      windsurfer snowboarder slider manchetter tacler scorer goaler shooter sprinter crawler coacher smasher lober
+      lifter slicer volleyer dribbler dropper raffuter skater rider surfer`,
+  },
+  jeux: {
+    words: `noob gameplay loot respawn spawn boss lag combo headshot speedrun streamer gamer manette`,
+    verbs: `looter crafter farmer respawner spawner lagger streamer gamer upgrader rusher camper sniper`,
+  },
+};
+

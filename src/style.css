@@ -831,7 +831,7 @@ input.invalid { border-color: var(--bad); outline: 1px solid var(--bad); }
 .btn.word-pick.on { background: color-mix(in srgb, var(--bad), transparent 82%); border-color: var(--bad); color: var(--ink); text-decoration: line-through; }
 @media (prefers-reduced-motion: reduce) { .player .clock.low.running { animation: none; } }
 
-/* ---------- Listes de mots : explorateur et listes perso ---------- */
+/* ---------- Listes de mots : explorateur ---------- */
 .card.lists { max-width: 760px; text-align: left; display: grid; gap: 10px; max-height: calc(100dvh - 32px); overflow: auto; }
 .card.lists h2 { margin: 0; }
 .card.lists p { margin: 0; }
@@ -839,8 +839,6 @@ input.invalid { border-color: var(--bad); outline: 1px solid var(--bad); }
 .lx-top select { flex: 1 1 200px; min-width: 0; }
 .lx-search input { flex: 1 1 200px; min-width: 0; text-transform: uppercase; letter-spacing: 0.04em; }
 .lx-info { display: grid; gap: 8px; }
-.lx-new { display: grid; gap: 10px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; }
-.lx-new .row { justify-content: flex-start; margin: 0; }
 .lx-words {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 4px;
   font: 600 0.85rem/1.2 ui-monospace, Menlo, Consolas, monospace; letter-spacing: 0.03em;
@@ -849,14 +847,7 @@ input.invalid { border-color: var(--bad); outline: 1px solid var(--bad); }
   display: block; padding: 4px 6px; border-radius: 6px; border: 1px solid transparent; background: color-mix(in srgb, var(--ink), transparent 95%);
   color: var(--ink); font: inherit; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-button.lx-w { cursor: pointer; }
-.lx-words.editable button.lx-w:hover { border-color: var(--bad); text-decoration: line-through; }
-.lx-w.added { background: color-mix(in srgb, var(--good), transparent 82%); border-color: color-mix(in srgb, var(--good), transparent 50%); }
-.lx-w.removed { text-decoration: line-through; color: var(--muted); }
-.lx-w.removed:hover { text-decoration: none; border-color: var(--good); }
 .lx-more { display: flex; justify-content: center; }
-.lx-removed summary { cursor: pointer; font-weight: 600; margin-bottom: 6px; }
-.lx-danger { justify-content: flex-start !important; margin-top: 0 !important; }
 .dict-head .btn.small { justify-self: start; margin-top: 6px; }
 
 /* ---------- Fin de partie : les mots maléfiques ---------- */
