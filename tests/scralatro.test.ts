@@ -1,8 +1,11 @@
 import { describe, expect, test } from 'vitest';
 import {
   buy, endTurn, exchangeTiles, geometry, leaveShop, levelTarget, lvlOf, newScralatro, newTile, passTurn, placeCell,
-  resolveMove, runProgram, sellPower, startProgram, useReserve, validate, applyOffer, type Lex, type Req, type SGame, type STile,
+  resolveMove, runProgram, sellPower, startProgram, useReserve, validate, applyOffer, mergeCell, type Lex, type Req, type SGame, type STile,
 } from '../src/scralatro/engine';
+import { actor, applySxOp, parseSxOp, sxView } from '../src/scralatro/remote';
+import { Games } from '../server/games';
+import type { ServerMsg } from '../src/net/protocol';
 
 const WORDS = new Set(['CHAT', 'CHATS', 'MOT', 'AS', 'TA', 'ME', 'PORTER', 'PORTAIT', 'GRAND', 'GRANDE', 'EAU', 'ZUT']);
 const lex: Lex = { invalid: async (ws) => ws.filter((w) => !WORDS.has(w)) };
@@ -162,5 +165,77 @@ describe('scralatro', () => {
     expect(useReserve(g, 0).ok).toBe(true);
     expect(p.reserve).toBeNull();
     expect(useReserve(g, 0).ok).toBe(false);
+  });
+});
+
+describe('scralatro : cases, actions, en ligne', () => {
+  test('une case garde son type quand on lui ajoute une texture, et inversement', () => {
+    const g = newScralatro('solo');
+    g.cells[0][0] = { t: 'MT' };
+    applyOffer(g, 0, { kind: 'cell', cell: { x: 'air' } });
+    placeCell(g, 0, 0, 0);
+    expect(g.cells[0][0]).toMatchObject({ t: 'MT', x: 'air' });
+    applyOffer(g, 0, { kind: 'cell', cell: { x: 'feu' } });
+    placeCell(g, 0, 0, 0);
+    expect(g.cells[0][0]).toMatchObject({ t: 'MT', x: 'feu' });
+    applyOffer(g, 0, { kind: 'cell', cell: { t: 'LQ' } });
+    placeCell(g, 0, 0, 0);
+    expect(g.cells[0][0]).toMatchObject({ t: 'LQ', x: 'feu' });
+    expect(mergeCell({ t: 'RND', rnd: 'MT', x: 'eau' }, { x: 'air' })).toEqual({ t: 'RND', rnd: 'MT', x: 'air' });
+  });
+
+  test('actions : seul le joueur qui doit agir peut le faire, abandon possible', async () => {
+    const g = newScralatro('compet', ['Ana', 'Bob']);
+    expect(actor(g)).toBe(0);
+    expect((await applySxOp(g, 1, { k: 'leave' }, lex)).ok).toBe(false);
+    expect((await applySxOp(g, 0, { k: 'leave' }, lex)).ok).toBe(true);
+    expect(actor(g)).toBe(1);
+    await applySxOp(g, 1, { k: 'leave' }, lex);
+    expect(g.phase).toBe('play');
+    const t = rack(g, 0, 'CHAT');
+    const r = await applySxOp(g, 0, { k: 'play', reqs: row(t, 7, 4) }, lex);
+    expect(r.ok && r.ev.res?.score).toBe(9);
+    expect(actor(g)).toBe(1);
+    const bad = await applySxOp(g, 1, { k: 'play', reqs: [{ id: 99999, r: 0, c: 0 }] }, lex);
+    expect(bad.ok).toBe(false);
+    expect((await applySxOp(g, 0, { k: 'abandon' }, lex)).ok).toBe(true);
+    expect(g.phase).toBe('over');
+    expect(g.overText).toContain('Ana');
+  });
+
+  test('messages réseau vérifiés, vue sans les lettres adverses', () => {
+    expect(parseSxOp({ k: 'play', reqs: [{ id: 3, r: 7, c: 7, as: 'E' }] })).toEqual({ k: 'play', reqs: [{ id: 3, r: 7, c: 7, as: 'E' }], crypto: null });
+    expect(parseSxOp({ k: 'play', reqs: [{ id: 3, r: 70, c: 7 }] })).toBeNull();
+    expect(parseSxOp({ k: 'nope' })).toBeNull();
+    const g = newScralatro('compet', ['Ana', 'Bob']);
+    leaveShop(g); leaveShop(g);
+    const v = sxView(g, 0);
+    expect(v.players[0].rack.map((t) => t.l)).toEqual(g.players[0].rack.map((t) => t.l));
+    expect(v.players[1].rack.every((t) => t.l === '?')).toBe(true);
+    expect(v.players[1].rack).toHaveLength(7);
+  });
+
+  test('serveur : partie Scralatro en ligne à deux', async () => {
+    const sent: { seat: number; msg: ServerMsg }[] = [];
+    const games = new Games({ send: (_r, seat, msg) => sent.push({ seat, msg }), invalidWords: (w) => w.filter((x) => !WORDS.has(x)), changed: () => {} });
+    const A = 'a'.repeat(32), B = 'b'.repeat(32);
+    const a = games.join('SXA234', A, true);
+    if ('close' in a) throw new Error();
+    await games.message(a.room, 0, { type: 'hello', name: 'Ana', options: { variant: null, scralatro: 'coop' } });
+    const b = games.join('SXA234', B, false);
+    if ('close' in b) throw new Error();
+    await games.message(b.room, 1, { type: 'hello', name: 'Bob' });
+    const last = () => sent.filter((s) => s.msg.type === 'sx').at(-1)!.msg as Extract<ServerMsg, { type: 'sx' }>;
+    expect(last().state.mode).toBe('coop');
+    expect(last().state.players.map((p) => p.name)).toEqual(['Ana', 'Bob']);
+    await games.message(a.room, 1, { type: 'sx', op: { k: 'leave' } });
+    expect(sent.at(-1)).toMatchObject({ seat: 1, msg: { type: 'error' } });
+    await games.message(a.room, 0, { type: 'sx', op: { k: 'leave' } });
+    await games.message(a.room, 1, { type: 'sx', op: { k: 'leave' } });
+    expect(last().state.phase).toBe('play');
+    expect(last().ev).toMatchObject({ by: 1, k: 'leave' });
+    expect(games.summary('SXA234', A)).toMatchObject({ found: true, opp: 'Bob', sx: 'coop', myTurn: true });
+    await games.message(a.room, 1, { type: 'sx-restart' });
+    expect(last().state.phase).toBe('shop');
   });
 });

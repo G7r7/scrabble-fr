@@ -8,15 +8,23 @@ import {
   type Mode, type Rarity,
 } from './data';
 import {
-  applyOffer, baseValue, beginTurn, buy, checkAfterSale, competReward, continueAfterWin, endTurn, exchangeTiles, geometry, has,
-  LAST_LEVEL, leaveShop, loadScralatro, lvlOf, movePower, movesLeft, newScralatro, nextSpecialLevel,
-  nextSpecialOf, packPrice, passTurn, placeCell, previewScore, priceFor, rerollShop, resolveMove, runProgram,
-  saveScralatro, sellPower, skipPending, tileValue, useReserve, validate,
+  baseValue, beginTurn, competReward, geometry, has,
+  LAST_LEVEL, loadScralatro, lvlOf, movesLeft, newScralatro, nextSpecialLevel,
+  nextSpecialOf, packPrice, previewScore, priceFor,
+  saveScralatro, tileValue, validate,
   type Cell, type Lex, type MoveResult, type Offer, type PowerInst, type Req, type SGame, type STile, type ShopItem,
   type TurnEnd,
 } from './engine';
+import { actor, applySxOp, type SxEvent, type SxOp } from './remote';
+import type { ClientMsg, ServerMsg } from '../net/protocol';
 
-export interface Deps { lex: Lex; sound: Sound; fx: Fx; onExit: () => void }
+/** Jeu en ligne : l'appli crée la partie sur le serveur (avec son écran d'attente) et gère la connexion. */
+export interface NetDeps {
+  host(mode: 'coop' | 'compet', name: string): void;
+  /** Se déconnecte de la partie en ligne ; `bye` : la quitte pour de bon. */
+  close(bye: boolean): void;
+}
+export interface Deps { lex: Lex; sound: Sound; fx: Fx; onExit: () => void; net: NetDeps }
 
 const ACTIVE_KEY = 'scrabble-fr-scralatro-actif';
 const esc = (s: string) => s.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch]!);
@@ -45,7 +53,8 @@ export function tileHtml(g: SGame, t: STile, extra = '', withId = true): string 
   const v = tileValue(g, t);
   const val = t.l === '#' ? '' : `<sub class="${t.bonus > 0 ? 'up' : t.bonus < 0 ? 'down' : ''}">${v}</sub>`;
   const pas = t.pas.length ? `<i class="pas">${t.pas.map((p) => `<b class="p-${p}"></b>`).join('')}</i>` : '';
-  return `<div class="${cls.join(' ')}"${withId ? ` data-id="${t.id}"` : ''}><span>${l}</span>${val}${pas}</div>`;
+  const tox = t.ed === 'toxique' ? '<i class="tox">☣</i>' : '';
+  return `<div class="${cls.join(' ')}"${withId ? ` data-id="${t.id}"` : ''}><span>${l}</span>${val}${pas}${tox}</div>`;
 }
 export function tileTitle(t: STile): string {
   const parts: string[] = [t.l === '?' ? 'Joker' : t.l === '#' ? 'Verrou' : `Lettre ${t.l}`];
@@ -100,6 +109,14 @@ export class Scralatro {
   private previewTok = 0;
   private status = '';
   private statusBad = false;
+  /** Menu de partie (bouton ☰ ou Échap). */
+  private menuOpen = false;
+  /** Partie en ligne : envoi au serveur, code, place du joueur, adversaire connecté. */
+  private net: { send: (m: ClientMsg) => void; code: string } | null = null;
+  private seat: 0 | 1 = 0;
+  private peer = false;
+  /** Évènements reçus en cours d'affichage (décompte d'un coup), joués dans l'ordre. */
+  private shows: Promise<void> = Promise.resolve();
 
   constructor(private deps: Deps) {
     this.root = document.createElement('div');
@@ -108,30 +125,171 @@ export class Scralatro {
     document.body.appendChild(this.root);
     this.root.addEventListener('click', (e) => this.onClick(e));
     this.bindDrag();
+    document.addEventListener('keydown', (e) => {
+      if (this.root.hidden || e.key !== 'Escape' || !this.g) return;
+      e.preventDefault();
+      // Échap ferme d'abord une fenêtre ouverte par-dessus (sac, journal…), sinon ouvre ou ferme le menu.
+      const extra = this.root.querySelector('.sx-extra');
+      if (extra && !this.menuOpen) { extra.querySelector<HTMLElement>('[data-a="close-modal"]')?.click(); return; }
+      this.menuOpen = !this.menuOpen;
+      this.render();
+    });
   }
 
   // ---------- Ouverture ----------
   open() {
     this.root.hidden = false;
     document.body.classList.add('sx-on');
+    if (this.net) return this.render();
     lsSet(ACTIVE_KEY, '1');
     const saved = loadScralatro();
     if (saved && saved.phase !== 'over') { this.g = saved; this.resetUi(); this.render(); }
     else this.menu();
   }
   private exit() {
-    this.root.hidden = true;
-    document.body.classList.remove('sx-on');
+    this.leaveNet(false);
+    this.hide();
     lsSet(ACTIVE_KEY, null);
     this.deps.onExit();
   }
+  /** Cache l'écran Scralatro (la partie locale reste sauvegardée). */
+  hide() {
+    this.root.hidden = true;
+    document.body.classList.remove('sx-on');
+  }
+  get visible() { return !this.root.hidden; }
   private resetUi() {
     this.pend.clear(); this.sel = null; this.exch = null; this.selPower = null; this.selItem = null;
     this.progSel = []; this.progLetter = ''; this.shownPlayer = -1; this.status = ''; this.rackOrder = [];
+    this.menuOpen = false; this.busy = false;
+  }
+
+  // ---------- En ligne ----------
+  get online() { return this.net !== null; }
+  get onlineCode() { return this.net?.code ?? null; }
+  /** Début d'une partie en ligne (ou reprise) : l'appli transmet ensuite les messages du serveur. */
+  attach(code: string, send: (m: ClientMsg) => void, peer: boolean) {
+    if (this.net?.code !== code) { this.g = null; this.resetUi(); }
+    this.net = { code, send };
+    this.peer = peer;
+    this.root.hidden = false;
+    document.body.classList.add('sx-on');
+  }
+  /** Quitte la partie en ligne (`bye` : pour de bon) ; sans effet en local. */
+  private leaveNet(bye: boolean) {
+    if (!this.net) return;
+    this.net = null;
+    this.peer = false;
+    this.g = null;
+    this.deps.net.close(bye);
+  }
+  onPeer(online: boolean) {
+    const was = this.peer;
+    this.peer = online;
+    if (!this.g || was === online) return this.render();
+    const other = this.g.players[1 - this.seat]?.name ?? 'Votre partenaire';
+    this.say(online ? `${other} est connecté.` : `${other} est hors ligne : la partie l’attendra.`);
+    this.render();
+  }
+  onLeft() {
+    const other = this.g?.players[1 - this.seat]?.name ?? 'Votre partenaire';
+    this.peer = false;
+    this.say(`${other} a quitté la partie.`, true);
+    this.render();
+  }
+  onNetError(text: string) {
+    this.busy = false;
+    this.deps.sound.invalid();
+    this.say(text, true);
+    if (this.g) this.render(); else this.menu();
+  }
+  onServer(m: Extract<ServerMsg, { type: 'sx' }>) {
+    const prev = this.g;
+    const fresh = !prev || (prev.phase === 'over' && m.state.phase !== 'over') || m.state.log.length < prev.log.length;
+    this.seat = m.you;
+    this.g = m.state;
+    if (fresh) { this.resetUi(); this.say(prev ? 'Nouvelle partie !' : `Partie ${m.state.mode === 'coop' ? 'coopérative' : 'compétitive'} en ligne.`); }
+    const ev = m.ev;
+    if (ev?.by === this.seat) this.busy = false;
+    if (!ev) return this.render();
+    const turnBefore = prev ? actor(prev) === this.seat : false;
+    if (ev.by === this.seat) this.pend.clear();
+    this.render();
+    this.shows = this.shows.then(async () => {
+      if (this.g !== m.state) { this.render(); return; }
+      await this.present(ev);
+      if (this.g === m.state && !turnBefore && actor(m.state) === this.seat && m.state.phase !== 'over') this.deps.sound.turn();
+      this.render();
+    });
+  }
+
+  /** Joueur qui doit agir maintenant peut être moi (toujours vrai sur un seul appareil). */
+  private canAct(): boolean {
+    const g = this.g;
+    if (!g || g.phase === 'over' || g.won) return false;
+    return !this.net || actor(g) === this.seat;
+  }
+
+  /** Envoie une action : appliquée tout de suite sur cet appareil, ou envoyée au serveur en ligne. */
+  private async act(op: SxOp): Promise<boolean> {
+    const g = this.g;
+    if (!g) return false;
+    if (this.net) {
+      this.busy = true;
+      this.net.send({ type: 'sx', op });
+      this.render();
+      return true;
+    }
+    const r = await applySxOp(g, op.k === 'abandon' ? this.me : actor(g), op, this.deps.lex);
+    if (!r.ok) { this.deps.sound.invalid(); this.say(r.error, true); this.render(); return false; }
+    this.save();
+    if (op.k === 'play') { this.render(); }
+    await this.present(r.ev);
+    if (this.g === g) this.render();
+    return true;
+  }
+
+  /** Affiche le résultat d'une action (les miennes comme celles de l'autre joueur en ligne). */
+  private async present(ev: SxEvent) {
+    const g = this.g!;
+    const mine = !this.net || ev.by === this.seat;
+    const who = g.players.length > 1 && !mine ? `${g.players[ev.by].name} : ` : '';
+    switch (ev.k) {
+      case 'play':
+        this.say('');
+        this.deps.sound.tiles(ev.res?.placed.length ?? 1, 60);
+        if (ev.res && ev.end) { await this.showBreakdown(ev.res, ev.end); await this.afterTurn(ev.end); }
+        return;
+      case 'pass': case 'exchange': {
+        if (ev.k === 'exchange') this.deps.sound.shuffle(); else this.deps.sound.soft();
+        const text = ev.msg ?? ev.end?.lines.join(' · ') ?? '';
+        this.say(who ? `${who}${ev.k === 'pass' ? 'passe son tour' : 'échange des lettres'}.${text ? ` ${text}` : ''}` : text);
+        if (ev.end) await this.afterTurn(ev.end);
+        return;
+      }
+      case 'sell':
+        if (ev.msg) this.say(who + ev.msg);
+        if (ev.end) await this.afterTurn(ev.end);
+        return;
+      case 'buy': case 'offer': case 'cell': case 'program': case 'reserve':
+        if (mine) { this.deps.sound.sparkle(); this.say(ev.msg ?? ''); }
+        return;
+      case 'reroll': if (mine) { this.deps.sound.shuffle(); this.say(ev.msg ?? ''); } return;
+      case 'leave':
+        this.say(ev.msg ?? '');
+        if (g.phase === 'play' && g.mode !== 'compet') this.deps.sound.turn();
+        return;
+      case 'abandon':
+        this.deps.sound.end(false);
+        return;
+      default: return;
+    }
   }
 
   private menu() {
+    this.leaveNet(false);
     this.g = null;
+    this.menuOpen = false;
     const saved = loadScralatro();
     const resume = saved && saved.phase !== 'over';
     this.root.innerHTML = `
@@ -141,40 +299,44 @@ export class Scralatro {
         ${resume ? `<button class="sx-btn gold wide" data-a="resume">Reprendre la partie · niveau ${lvlOf(saved!, 0).n}</button>` : ''}
         <div class="sx-modes">
           <button class="sx-mode" data-a="mode" data-mode="solo"><b>🃏 Solo</b><span>15 niveaux à valider, de plus en plus exigeants.</span></button>
-          <button class="sx-mode" data-a="mode" data-mode="coop"><b>🤝 Multijoueur coopératif</b><span>À deux sur cet appareil : score et coups en commun, chacun ses pouvoirs et son sac.</span></button>
-          <button class="sx-mode" data-a="mode" data-mode="compet"><b>⚔️ Multijoueur compétitif</b><span>À deux sur cet appareil : chacun son niveau ; le plus de points gagne.</span></button>
+          <button class="sx-mode" data-a="mode" data-mode="coop"><b>🤝 Multijoueur coopératif</b><span>À deux, en ligne ou sur cet appareil : score et coups en commun, chacun ses pouvoirs et son sac.</span></button>
+          <button class="sx-mode" data-a="mode" data-mode="compet"><b>⚔️ Multijoueur compétitif</b><span>À deux, en ligne ou sur cet appareil : chacun son niveau ; le plus de points gagne.</span></button>
         </div>
         <div class="sx-names" hidden>
-          <label>Joueur 1<input id="sxN1" maxlength="14" value="${esc(lsGet('scrabble-fr-nom') || 'Joueur 1')}" /></label>
+          <h3 class="sx-names-title"></h3>
+          <label>Votre nom<input id="sxN1" maxlength="14" value="${esc(lsGet('scrabble-fr-nom') || 'Joueur 1')}" /></label>
+          <button class="sx-btn gold wide" data-a="host">🌐 En ligne : créer la partie et envoyer le lien</button>
+          <div class="sx-sep"><span>ou sur cet appareil</span></div>
           <label>Joueur 2<input id="sxN2" maxlength="14" value="Joueur 2" /></label>
-          <button class="sx-btn gold wide" data-a="start2">C’est parti !</button>
+          <button class="sx-btn wide" data-a="start2">À deux sur cet appareil</button>
         </div>
         <button class="sx-btn ghost" data-a="exit">← Retour au Scrabble</button>
       </div>`;
   }
 
-  private start(mode: Mode, names: string[] = []) {
-    if (loadScralatro()?.phase === 'play' && !confirm('Abandonner la partie Scralatro en cours ?')) return;
+  private start(mode: Mode, names: string[] = [], ask = true) {
+    if (ask && loadScralatro()?.phase === 'play' && !confirm('Abandonner la partie Scralatro en cours ?')) return;
+    this.leaveNet(false);
+    lsSet(ACTIVE_KEY, '1');
     this.g = newScralatro(mode, names);
     this.resetUi();
     this.save();
     this.render();
   }
 
-  private save() { if (this.g) saveScralatro(this.g); }
+  /** Sur cet appareil seulement : en ligne, la partie est gardée par le serveur. */
+  private save() { if (this.g && !this.net) saveScralatro(this.g); }
 
   // ---------- Qui joue ----------
   /** Joueur dont on affiche le chevalet et les pouvoirs. */
   private get me(): 0 | 1 {
-    const g = this.g!;
-    if (g.pending) return g.pendingFor;
-    if (g.phase === 'shop') return (g.shopQueue[0] ?? 0) as 0 | 1;
-    return g.cur;
+    if (this.net) return this.seat;
+    return actor(this.g!);
   }
   /** À deux sur un appareil : écran de passage avant de dévoiler un chevalet. */
   private needHandoff(): boolean {
     const g = this.g!;
-    if (g.players.length < 2 || g.phase === 'over') return false;
+    if (this.net || g.players.length < 2 || g.phase === 'over') return false;
     return this.shownPlayer !== this.me;
   }
 
@@ -199,7 +361,7 @@ export class Scralatro {
     this.root.innerHTML = `
       <div class="sx-game ${g.phase === 'shop' ? 'in-shop' : ''}">
         <header class="sx-head">
-          <button class="sx-icon" data-a="quit" title="Quitter Scralatro" aria-label="Quitter">✕</button>
+          <button class="sx-icon" data-a="menu" title="Menu (Échap)" aria-label="Menu">☰</button>
           <button class="sx-level ${sp ? 'special' : ''}" data-a="level-info" title="${esc(sp ? `${sp.name} : ${sp.desc}` : 'Niveau normal')}">
             <small>Niveau</small><b>${lv.n}</b>${sp ? `<i>${sp.letter}</i>` : ''}</button>
           <div class="sx-goal">
@@ -210,6 +372,7 @@ export class Scralatro {
           <div class="sx-stat money"><small>${g.mode === 'coop' ? 'Argent' : esc(p.name)}</small>${money}</div>
         </header>
         ${scores}
+        ${this.netBar()}
         ${sp ? `<p class="sx-special"><b>${sp.letter} ${sp.name}</b> ${esc(sp.desc)}</p>` : ''}
         ${this.powersHtml()}
         <div class="sx-board-wrap"><div class="board sx-board" id="sxBoard">${this.boardHtml()}</div></div>
@@ -218,10 +381,42 @@ export class Scralatro {
         <div class="sx-actions">${this.actionsHtml()}</div>
         <p class="sx-status ${this.statusBad ? 'bad' : ''}">${esc(this.status)}</p>
       </div>
-      ${g.phase === 'shop' && !g.pending ? this.shopHtml() : ''}
-      ${g.pending ? this.pendingHtml() : ''}
-      ${g.phase === 'over' ? this.overHtml() : g.won ? this.wonHtml() : ''}`;
+      ${g.phase === 'shop' && !g.pending && actor(g) === this.me ? this.shopHtml() : ''}
+      ${g.pending && g.pendingFor === this.me ? this.pendingHtml() : ''}
+      ${g.phase === 'over' ? this.overHtml() : g.won ? this.wonHtml() : ''}
+      ${this.menuOpen ? this.gameMenuHtml() : ''}`;
     void this.updatePreview();
+  }
+
+  /** En ligne : code de la partie, présence de l'autre joueur, et qui doit agir. */
+  private netBar(): string {
+    const g = this.g!;
+    if (!this.net) return '';
+    const other = g.players[1 - this.seat];
+    const a = actor(g);
+    const what = g.phase === 'over' ? 'Partie terminée'
+      : a === this.seat ? (g.phase === 'shop' ? 'À vous : magasin' : g.pending ? 'À vous de choisir' : 'À vous de jouer')
+      : g.phase === 'shop' ? `${esc(other.name)} fait ses achats…` : `Au tour de ${esc(other.name)}…`;
+    return `<div class="sx-net"><span class="dot ${this.peer ? 'on' : ''}" title="${this.peer ? 'Connecté' : 'Hors ligne'}"></span>
+      <span>En ligne · <b>${esc(this.net.code)}</b> · ${esc(other.name)}</span><span class="sx-net-turn ${a === this.seat ? 'mine' : ''}">${what}</span></div>`;
+  }
+
+  private gameMenuHtml(): string {
+    const g = this.g!;
+    const mode = g.mode === 'solo' ? 'solo' : g.mode === 'coop' ? 'coopératif' : 'compétitif';
+    const kind = g.mode === 'solo' ? 'Partie solo' : `Partie en mode ${mode}`;
+    const live = g.phase !== 'over';
+    return `<div class="sx-modal sx-menu-modal"><div class="sx-card"><h2>Menu</h2>
+      <p class="sx-hint">${kind}${this.net ? ` en ligne (${esc(this.net.code)})` : ''} · niveau ${lvlOf(g, this.me).n}</p>
+      <div class="sx-menu-btns">
+        <button class="sx-btn gold wide" data-a="menu-close">▶ Reprendre la partie</button>
+        ${live ? '<button class="sx-btn wide red" data-a="abandon">🏳 Abandonner la partie</button>' : ''}
+        <button class="sx-btn wide" data-a="restart">↻ Nouvelle partie (mode ${mode})</button>
+        <button class="sx-btn wide" data-a="modes">☰ Choisir un autre mode</button>
+        <button class="sx-btn wide ghost" data-a="quit">← Retour au Scrabble</button>
+      </div>
+      ${this.net ? '<p class="sx-hint">En ligne, « Choisir un autre mode » et « Retour » vous déconnectent sans quitter la partie : vous la retrouverez dans « Mes parties en cours ».</p>' : ''}
+      </div></div>`;
   }
 
   private renderHandoff() {
@@ -295,12 +490,12 @@ export class Scralatro {
       const note = this.powerNote(selected);
       return `<div class="sx-pdetail ${RARITY_CLS[info.rarity]}"><div><b>${info.icon} ${esc(info.name)}</b> <small>${info.rarity}</small>
         <p>${esc(info.desc)}${note ? ` <em>${esc(note)}</em>` : ''}</p></div>
-        <div class="sx-pbtns"><button class="sx-btn small" data-a="pmove" data-d="-1" ${i === 0 || this.busy ? 'disabled' : ''}>◀</button>
-        <button class="sx-btn small" data-a="pmove" data-d="1" ${i === p.powers.length - 1 || this.busy ? 'disabled' : ''}>▶</button>
-        <button class="sx-btn small red" data-a="sell" ${this.busy || g.phase === 'over' ? 'disabled' : ''}>Vendre ${Math.max(1, Math.floor(selected.price / 2))} $</button></div></div>`;
+        <div class="sx-pbtns"><button class="sx-btn small" data-a="pmove" data-d="-1" ${i === 0 || this.busy || !this.canAct() ? 'disabled' : ''}>◀</button>
+        <button class="sx-btn small" data-a="pmove" data-d="1" ${i === p.powers.length - 1 || this.busy || !this.canAct() ? 'disabled' : ''}>▶</button>
+        <button class="sx-btn small red" data-a="sell" ${this.busy || !this.canAct() ? 'disabled' : ''}>Vendre ${Math.max(1, Math.floor(selected.price / 2))} $</button></div></div>`;
     })() : '';
     return `<section class="sx-powers"><div class="sx-pslots">${slots.join('')}
-      <button class="sx-reserve ${reserve ? 'full' : ''}" data-a="reserve" title="${esc(reserve ? `Réserve : ${reserve.name} — ${reserve.desc}` : 'Réserve de programme (vide)')}" ${reserve ? '' : 'disabled'}>
+      <button class="sx-reserve ${reserve ? 'full' : ''}" data-a="reserve" title="${esc(reserve ? `Réserve : ${reserve.name} — ${reserve.desc}` : 'Réserve de programme (vide)')}" ${reserve && this.canAct() ? '' : 'disabled'}>
         <span class="em">${reserve ? reserve.icon : '💾'}</span><span class="nm">${reserve ? esc(reserve.name) : 'Réserve'}</span></button></div>${detail}</section>`;
   }
   private powerNote(x: PowerInst): string {
@@ -323,11 +518,11 @@ export class Scralatro {
   private actionsHtml(): string {
     const g = this.g!;
     if (g.phase !== 'play') return `<button class="sx-btn" data-a="log">Journal</button><button class="sx-btn" data-a="bag">Sac</button>`;
-    const dis = this.busy ? 'disabled' : '';
+    const dis = this.busy || !this.canAct() ? 'disabled' : '';
     if (this.exch) {
       return `<button class="sx-btn gold" data-a="exch-ok" ${dis}>Échanger ${this.exch.size || ''}</button><button class="sx-btn" data-a="exch">Annuler</button>`;
     }
-    return `<button class="sx-btn gold" data-a="play" ${this.pend.size && !this.busy ? '' : 'disabled'}>Jouer</button>
+    return `<button class="sx-btn gold" data-a="play" ${this.pend.size && !dis ? '' : 'disabled'}>Jouer</button>
       <button class="sx-btn" data-a="recall" ${this.pend.size ? '' : 'disabled'}>Reprendre</button>
       <button class="sx-btn" data-a="shuffle">Mélanger</button>
       <button class="sx-btn" data-a="exch" ${dis || (lvlOf(g, this.me).special === 'lambda' ? 'disabled' : '')}>Échanger</button>
@@ -401,7 +596,7 @@ export class Scralatro {
   private offerDesc(o: Offer | ShopItem): string {
     switch (o.kind) {
       case 'tile': return `${esc(tileTitle(o.tile)).replace(/\n/g, '<br>')}<br><em>Ajoutée à votre sac.</em>`;
-      case 'cell': return `${esc(cellInfo(o.cell))}<br><em>Remplace la case de votre choix sur le plateau.</em>`;
+      case 'cell': return `${esc(cellInfo(o.cell))}<br><em>S’ajoute à la case de votre choix : un type remplace son type, une texture remplace sa texture, le reste est gardé.</em>`;
       case 'power': { const x = POWERS[o.id]; return `<b>${x.icon} ${esc(x.name)}</b> <small>(${x.rarity})</small><br>${esc(x.desc)}`; }
       case 'program': return `<b>${esc(PROGRAMS[o.id].name)}</b> : ${esc(PROGRAMS[o.id].desc)}`;
       case 'upgrade': return `Toutes vos tuiles ${o.letter} gagnent pour toujours leur valeur de départ : +${baseValue(o.letter)}.`;
@@ -414,7 +609,7 @@ export class Scralatro {
     const g = this.g!;
     const pd = g.pending!;
     if (pd.type === 'cell') {
-      return `<div class="sx-banner"><span>Touchez la case du plateau à remplacer par :</span>${miniCell(pd.cell)}
+      return `<div class="sx-banner"><span>Touchez la case du plateau à améliorer avec :</span>${miniCell(pd.cell)}
         <button class="sx-btn small" data-a="skip">Renoncer</button></div>`;
     }
     if (pd.type === 'choose') {
@@ -442,11 +637,11 @@ export class Scralatro {
     const g = this.g!;
     return `<div class="sx-modal"><div class="sx-card end"><h2>${g.mode === 'compet' ? 'Fin de partie' : 'Partie terminée'}</h2><p>${esc(g.overText ?? '')}</p>
       ${g.players.map((p) => `<p class="sx-hint">${esc(p.name)} : ${p.total} points, ${p.powers.length} pouvoir${p.powers.length > 1 ? 's' : ''}</p>`).join('')}
-      <div class="sx-card-btns"><button class="sx-btn gold" data-a="again">Nouvelle partie</button><button class="sx-btn" data-a="exit">Retour au Scrabble</button></div></div></div>`;
+      <div class="sx-card-btns"><button class="sx-btn gold" data-a="restart">Nouvelle partie</button><button class="sx-btn" data-a="modes">Autre mode</button><button class="sx-btn" data-a="exit">Retour au Scrabble</button></div></div></div>`;
   }
   private wonHtml(): string {
     return `<div class="sx-modal"><div class="sx-card end won"><h2>🏆 Victoire !</h2><p>Vous avez validé le niveau ${LAST_LEVEL}.</p>
-      <div class="sx-card-btns"><button class="sx-btn gold" data-a="continue">Continuer (niveaux sans fin)</button><button class="sx-btn" data-a="finish">Terminer la partie</button></div></div></div>`;
+      <div class="sx-card-btns"><button class="sx-btn ghost" data-a="menu">☰</button><button class="sx-btn gold" data-a="continue">Continuer (niveaux sans fin)</button><button class="sx-btn" data-a="finish">Terminer la partie</button></div></div></div>`;
   }
 
   // ---------- Évènements ----------
@@ -463,6 +658,7 @@ export class Scralatro {
       const names = this.root.querySelector<HTMLElement>('.sx-names')!;
       names.hidden = false;
       names.dataset.mode = mode;
+      names.querySelector('.sx-names-title')!.textContent = mode === 'coop' ? '🤝 Multijoueur coopératif' : '⚔️ Multijoueur compétitif';
       return;
     }
     if (a === 'start2') {
@@ -470,42 +666,49 @@ export class Scralatro {
       const n2 = this.root.querySelector<HTMLInputElement>('#sxN2')!.value.trim() || 'Joueur 2';
       return this.start(this.root.querySelector<HTMLElement>('.sx-names')!.dataset.mode as Mode, [n1, n2]);
     }
-    if (a === 'resume') { this.g = loadScralatro(); this.resetUi(); return this.render(); }
-    if (!g) return;
-    if (a === 'ready') { this.shownPlayer = this.me; this.deps.sound.turn(); return this.render(); }
-    if (a === 'quit') { this.save(); return this.exit(); }
-    if (a === 'again') { saveScralatro(null); return this.menu(); }
-    if (a === 'continue') { continueAfterWin(g); this.save(); return this.render(); }
-    if (a === 'finish') {
-      g.phase = 'over'; g.won = false; g.overText = `Victoire ! Les ${LAST_LEVEL} niveaux sont validés.`;
-      this.save(); return this.render();
+    if (a === 'host') {
+      const n1 = this.root.querySelector<HTMLInputElement>('#sxN1')!.value.trim() || 'Joueur 1';
+      const mode = this.root.querySelector<HTMLElement>('.sx-names')!.dataset.mode as 'coop' | 'compet';
+      lsSet('scrabble-fr-nom', n1);
+      this.hide();
+      return this.deps.net.host(mode, n1);
     }
+    if (a === 'resume') { this.g = loadScralatro(); this.resetUi(); lsSet(ACTIVE_KEY, '1'); return this.render(); }
+    if (!g) return;
+    if (a === 'menu') { this.menuOpen = true; return this.render(); }
+    if (a === 'menu-close') { this.menuOpen = false; return this.render(); }
+    if (a === 'abandon') return this.abandon();
+    if (a === 'restart') return this.restart();
+    if (a === 'modes') { this.save(); return this.menu(); }
+    if (a === 'quit') { this.save(); return this.exit(); }
+    if (a === 'ready') { this.shownPlayer = this.me; this.deps.sound.turn(); return this.render(); }
+    if (a === 'continue') return void this.act({ k: 'continue' });
+    if (a === 'finish') return void this.act({ k: 'finish' });
     if (a === 'level-info') {
       const lv = lvlOf(g, this.me);
       return this.say(lv.special ? `${SPECIALS[lv.special].letter} ${SPECIALS[lv.special].name} : ${SPECIALS[lv.special].desc}` : `Niveau ${lv.n} : ${lv.target} points à atteindre.`);
     }
     if (a === 'power') { const uid = Number(el!.dataset.uid); this.selPower = this.selPower === uid ? null : uid; return this.render(); }
-    if (a === 'pmove' && this.selPower !== null && !this.busy) { movePower(g, this.me, this.selPower, Number(el!.dataset.d) as -1 | 1); this.save(); return this.render(); }
-    if (a === 'sell' && this.selPower !== null && !this.busy) return this.sell();
-    if (a === 'reserve') return this.reserve();
     if (a === 'bag') return this.showBag();
     if (a === 'log') return this.showLog();
     if (a === 'close-modal') { this.root.querySelector('.sx-extra')?.remove(); return; }
+    if (this.busy || !this.canAct()) {
+      if (a || target.closest('.sx-board .cell, .tile[data-id]')) this.say(this.net && !this.canAct() && g.phase !== 'over' ? 'Ce n’est pas à vous : patientez.' : this.status, this.statusBad);
+      return;
+    }
+    if (a === 'pmove' && this.selPower !== null) return void this.act({ k: 'move', uid: this.selPower, d: Number(el!.dataset.d) as -1 | 1 });
+    if (a === 'sell' && this.selPower !== null) return this.sell();
+    if (a === 'reserve') return this.reserve();
     // Magasin.
     if (a === 'item') { this.selItem = Number(el!.dataset.i); return this.render(); }
     if (a === 'buy' && this.selItem !== null) return this.buy(this.selItem);
-    if (a === 'reroll') { const err = rerollShop(g, this.me); this.selItem = null; this.say(err ?? 'Nouveaux articles !', !!err); if (!err) this.deps.sound.shuffle(); this.save(); return this.render(); }
+    if (a === 'reroll') { this.selItem = null; return void this.act({ k: 'reroll' }); }
     if (a === 'leave') return this.leave();
     if (a === 'offer' && g.pending?.type === 'choose') {
-      const o = g.pending.offers[Number(el!.dataset.i)];
-      const r = applyOffer(g, this.me, o);
-      this.say(r.ok ? r.msg : r.error, !r.ok);
-      if (r.ok) this.deps.sound.sparkle();
       this.progSel = []; this.progLetter = '';
-      this.save();
-      return this.render();
+      return void this.act({ k: 'offer', i: Number(el!.dataset.i) });
     }
-    if (a === 'skip') { skipPending(g); this.save(); return this.render(); }
+    if (a === 'skip') return void this.act({ k: 'skip' });
     if (a === 'prog-letter') { this.progLetter = el!.dataset.l!; return this.render(); }
     if (a === 'prog-ok') return this.runProgram();
     const progTile = target.closest<HTMLElement>('[data-prog]');
@@ -519,13 +722,7 @@ export class Scralatro {
     }
     // Plateau : pose d'une case achetée.
     const cell = target.closest<HTMLElement>('.sx-board .cell');
-    if (cell && g.pending?.type === 'cell') {
-      const r = placeCell(g, this.me, Number(cell.dataset.r), Number(cell.dataset.c));
-      this.say(r.ok ? r.msg : r.error, !r.ok);
-      this.deps.sound.sparkle();
-      this.save();
-      return this.render();
-    }
+    if (cell && g.pending?.type === 'cell') return void this.act({ k: 'cell', r: Number(cell.dataset.r), c: Number(cell.dataset.c) });
     if (g.phase !== 'play') return;
     // Jeu.
     if (a === 'play') return void this.play();
@@ -650,67 +847,44 @@ export class Scralatro {
   // ---------- Jouer ----------
   private async play() {
     const g = this.g!;
-    if (this.busy || !this.pend.size) return;
+    if (this.busy || !this.pend.size || !this.canAct()) return;
     const pi = this.me;
     const reqs = this.reqs();
     const geo = geometry(g, pi, reqs);
     if (!geo.ok) { this.deps.sound.invalid(); return this.say(geo.error, true); }
     this.busy = true;
     try {
-      const v = await validate(g, pi, geo.words, this.deps.lex);
-      if (!v.ok) { this.deps.sound.invalid(); return this.say(`Mot${v.invalid.length > 1 ? 's' : ''} absent${v.invalid.length > 1 ? 's' : ''} du dictionnaire : ${v.invalid.join(', ')}`, true); }
+      // En ligne, le serveur vérifie les mots avec la liste de la partie.
+      if (!this.net) {
+        const v = await validate(g, pi, geo.words, this.deps.lex);
+        if (!v.ok) { this.deps.sound.invalid(); return this.say(`Mot${v.invalid.length > 1 ? 's' : ''} absent${v.invalid.length > 1 ? 's' : ''} du dictionnaire : ${v.invalid.join(', ')}`, true); }
+      }
       const p = g.players[pi];
       let crypto: number | null = null;
       if (has(g, pi, 'cryptographe') && p.crypto === null && !p.played) {
         crypto = await this.pickNumber('🔐 Le cryptographe', 'Choisissez le décalage des lettres marquantes pour ce niveau (0 : aucun).');
       }
-      this.pend.clear();
-      this.sel = null;
-      const res = resolveMove(g, pi, reqs, v.infos, { crypto, cancre: v.cancre });
-      this.say('');
-      this.render();
-      this.deps.sound.tiles(res.placed.length, 60);
-      const end = await endTurn(g, pi, reqs.map((q) => q.id), this.deps.lex);
-      this.save();
-      await this.showBreakdown(res, end);
-      await this.afterTurn(end);
+      const sent = { k: 'play' as const, reqs, crypto };
+      const ok = await this.act(sent);
+      if (ok && !this.net) { this.pend.clear(); this.sel = null; }
     } finally {
-      this.busy = false;
+      if (!this.net) this.busy = false;
       if (this.g === g) this.render();
     }
   }
 
   private async pass() {
-    const g = this.g!;
-    if (this.busy) return;
+    if (this.busy || !this.canAct()) return;
     if (!confirm('Passer votre tour ? Cela consomme un coup.')) return;
-    this.busy = true;
-    try {
-      this.pend.clear();
-      passTurn(g, this.me);
-      this.deps.sound.soft();
-      const end = await endTurn(g, this.me, [], this.deps.lex);
-      this.save();
-      if (end.lines.length) this.say(end.lines.join(' · '));
-      await this.afterTurn(end);
-    } finally { this.busy = false; if (this.g === g) this.render(); }
+    this.pend.clear();
+    await this.act({ k: 'pass' });
   }
 
   private async exchange() {
-    const g = this.g!;
-    if (this.busy || !this.exch) return;
-    const r = exchangeTiles(g, this.me, [...this.exch]);
-    if (!r.ok) return this.say(r.error, true);
+    if (this.busy || !this.exch || !this.canAct()) return;
+    const ids = [...this.exch];
     this.exch = null;
-    this.deps.sound.shuffle();
-    if (!r.endsTurn) { this.say(['Échange de tuiles en bois : vous continuez votre tour.', ...r.lines].join(' · ')); this.save(); return this.render(); }
-    this.busy = true;
-    try {
-      const end = await endTurn(g, this.me, [], this.deps.lex);
-      this.save();
-      this.say([...r.lines, ...end.lines].join(' · '));
-      await this.afterTurn(end);
-    } finally { this.busy = false; if (this.g === g) this.render(); }
+    await this.act({ k: 'exchange', ids });
   }
 
   /** Après un tour : niveau réussi, fin de partie, ou tour suivant. */
@@ -775,52 +949,52 @@ export class Scralatro {
     const uid = this.selPower!;
     const x = g.players[this.me].powers.find((y) => y.uid === uid);
     if (!x || !confirm(`Vendre ${POWERS[x.id].name} pour ${Math.max(1, Math.floor(x.price / 2))} $ ?`)) return;
-    const r = sellPower(g, this.me, uid);
     this.selPower = null;
-    this.say(r.ok ? r.msg : r.error, !r.ok);
-    const done = checkAfterSale(g, this.me);
-    this.save();
-    this.render();
-    if (done) void this.afterTurn({ lines: [], extra: 0, levelDone: done }).then(() => this.render());
+    void this.act({ k: 'sell', uid });
   }
   private reserve() {
-    const g = this.g!;
-    if (this.busy) return;
+    if (this.busy || !this.canAct()) return;
     this.pend.clear();
-    const r = useReserve(g, this.me);
     this.progSel = []; this.progLetter = '';
-    this.say(r.ok ? r.msg : r.error, !r.ok);
-    this.save();
-    this.render();
+    void this.act({ k: 'reserve' });
   }
   private buy(i: number) {
-    const g = this.g!;
-    const r = buy(g, this.me, i);
     this.selItem = null;
     this.progSel = []; this.progLetter = '';
-    this.say(r.ok ? r.msg : r.error, !r.ok);
-    if (r.ok) this.deps.sound.sparkle(); else this.deps.sound.invalid();
-    this.save();
-    this.render();
+    void this.act({ k: 'buy', i });
   }
   private runProgram() {
-    const g = this.g!;
-    const r = runProgram(g, this.me, this.progSel, this.progLetter || undefined);
-    if (!r.ok) return this.say(r.error, true);
-    this.progSel = []; this.progLetter = '';
-    this.say(r.msg);
-    this.deps.sound.sparkle();
-    this.save();
-    this.render();
+    const ids = this.progSel, letter = this.progLetter || undefined;
+    void this.act(letter ? { k: 'program', ids, letter } : { k: 'program', ids }).then((ok) => {
+      if (ok) { this.progSel = []; this.progLetter = ''; }
+    });
   }
   private leave() {
-    const g = this.g!;
-    const lines = leaveShop(g);
     this.selItem = null; this.selPower = null; this.pend.clear(); this.exch = null;
-    this.say(lines.join(' · '));
-    if (g.phase === 'play' && g.mode !== 'compet') this.deps.sound.turn();
-    this.save();
-    this.render();
+    void this.act({ k: 'leave' });
+  }
+
+  /** Abandon : la partie s'arrête (en ligne, pour les deux joueurs). */
+  private abandon() {
+    const g = this.g!;
+    if (!confirm(this.net ? 'Abandonner la partie ? Elle s’arrête aussi pour votre partenaire.' : 'Abandonner la partie en cours ?')) return;
+    this.menuOpen = false;
+    if (g.phase === 'over') return this.render();
+    void this.act({ k: 'abandon' });
+  }
+  /** Nouvelle partie dans le même mode (mêmes joueurs). */
+  private restart() {
+    const g = this.g!;
+    const live = g.phase !== 'over';
+    if (this.net) {
+      if (live && !confirm('Recommencer une nouvelle partie ? La partie en cours s’arrête aussi pour votre partenaire.')) return;
+      this.menuOpen = false;
+      this.busy = true;
+      this.net.send({ type: 'sx-restart' });
+      return this.render();
+    }
+    if (live && !confirm('Abandonner la partie en cours et en recommencer une ?')) return;
+    this.start(g.mode, g.players.map((p) => p.name), false);
   }
 
   private showBag() {
@@ -858,7 +1032,7 @@ export class Scralatro {
     let drag: { id: number; x: number; y: number; ghost: HTMLElement | null; src: HTMLElement } | null = null;
     this.root.addEventListener('pointerdown', (e) => {
       const g = this.g;
-      if (!g || g.phase !== 'play' || this.busy || this.exch || g.pending) return;
+      if (!g || g.phase !== 'play' || this.busy || this.exch || g.pending || !this.canAct()) return;
       const el = (e.target as HTMLElement).closest<HTMLElement>('.tile[data-id]');
       if (!el || !el.closest('.sx-rack, .sx-board')) return;
       drag = { id: Number(el.dataset.id), x: e.clientX, y: e.clientY, ghost: null, src: el };

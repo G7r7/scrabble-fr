@@ -166,8 +166,7 @@ body.sx-on #app { display: none; }
 }
 @keyframes sx-shine { 60%, 100% { background-position: 150% 0; } }
 .sx .tile.tex-bois { background: repeating-linear-gradient(100deg, #b07a43 0 3px, #9a6534 3px 5px, #c08a52 5px 9px); --tile-edge: #5a3a18; color: #2a1606; }
-.sx .tile.tex-verre { background: linear-gradient(150deg, rgba(220, 245, 255, 0.85), rgba(150, 210, 240, 0.45)); --tile-edge: rgba(80, 150, 190, 0.8); backdrop-filter: blur(2px); color: #0b3954; }
-.sx .tile.tex-verre::after { content: ''; position: absolute; left: 12%; top: 8%; width: 30%; height: 18%; border-radius: 50%; background: rgba(255, 255, 255, 0.85); filter: blur(1px); pointer-events: none; }
+.sx .tile.tex-verre { background: radial-gradient(ellipse 16% 10% at 27% 17%, rgba(255, 255, 255, 0.9) 60%, transparent 100%), linear-gradient(150deg, rgba(220, 245, 255, 0.85), rgba(150, 210, 240, 0.45)); --tile-edge: rgba(80, 150, 190, 0.8); backdrop-filter: blur(2px); color: #0b3954; }
 .sx .tile.tex-papier { background: repeating-linear-gradient(0deg, #fbf8ef 0 5px, #ece7d6 5px 6px); --tile-edge: #c9c0a4; }
 .sx .tile.tex-papier.wear-1 { background: radial-gradient(circle at 75% 25%, rgba(160, 130, 70, 0.35), transparent 30%), repeating-linear-gradient(0deg, #f6f0df 0 5px, #e4dcc4 5px 6px); }
 .sx .tile.tex-papier.wear-2 { background: radial-gradient(circle at 70% 30%, rgba(150, 110, 50, 0.45), transparent 35%), radial-gradient(circle at 20% 80%, rgba(120, 90, 40, 0.35), transparent 30%), repeating-linear-gradient(0deg, #eee5ca 0 5px, #dccfac 5px 6px); clip-path: polygon(0 0, 92% 0, 100% 10%, 100% 100%, 8% 100%, 0 88%); }
@@ -177,10 +176,11 @@ body.sx-on #app { display: none; }
 .sx .tile.ed-holo::after { content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; mix-blend-mode: color; background: linear-gradient(120deg, #ff6b6b, #ffd93d, #6bff95, #6bc5ff, #c56bff, #ff6b6b) 0 0 / 300% 300%; animation: sx-holo 4s linear infinite; opacity: 0.8; }
 @keyframes sx-holo { to { background-position: 300% 300%; } }
 .sx .tile.ed-poly { animation: sx-hue 5s linear infinite; }
-.sx .tile.ed-poly { background-image: linear-gradient(150deg, #ffb3c7, #b3d4ff, #c8ffb3); }
+/* Sans texture, le polychrome a son propre fond ; avec une texture, il la teinte (les trois caractéristiques se cumulent). */
+.sx .tile.ed-poly:not([class*="tex-"]) { background-image: linear-gradient(150deg, #ffb3c7, #b3d4ff, #c8ffb3); }
 @keyframes sx-hue { to { filter: hue-rotate(360deg); } }
 .sx .tile.ed-toxique { box-shadow: inset 0 -2px 0 var(--tile-edge), 0 0 0 2px #84cc16, 0 0 12px #84cc16; }
-.sx .tile.ed-toxique::before { content: '☣'; position: absolute; right: 6%; top: 2%; font-size: 0.4em; color: #3f6212; }
+.sx .tile .tox { position: absolute; right: 6%; top: 2%; font-size: 0.4em; font-style: normal; color: #3f6212; line-height: 1; }
 .sx .tile.font-casino span { font-family: Limelight, Georgia, serif; color: #b91c1c; text-shadow: 0 0 1px #fff, 0 1px 0 #facc15; }
 .sx .tile.font-console span { font-family: 'Press Start 2P', monospace; font-size: 0.62em; color: #166534; image-rendering: pixelated; text-shadow: 1px 1px 0 #86efac; }
 .sx .tile.font-western span { font-family: Rye, Georgia, serif; color: #7c2d12; }
@@ -188,7 +188,7 @@ body.sx-on #app { display: none; }
 .sx .tile.font-infection span { font-family: Creepster, cursive; letter-spacing: 0.02em; }
 .sx .tile.font-infection.inf-0 span { color: #65a30d; text-shadow: 0 2px 0 #3f6212, 0 0 6px #a3e635; }
 .sx .tile.font-infection.inf-1 span { color: #c026d3; text-shadow: 0 2px 0 #701a75, 0 0 6px #f0abfc; }
-.sx .tile.font-infection { animation: sx-ooze 2.6s ease-in-out infinite; }
+.sx .tile.font-infection span { display: inline-block; animation: sx-ooze 2.6s ease-in-out infinite; }
 @keyframes sx-ooze { 50% { filter: saturate(1.6) brightness(1.08); } }
 .sx .tile.sty-gras span { font-weight: 900; -webkit-text-stroke: 0.04em currentColor; }
 .sx .tile.sty-italique span { font-style: italic; }
@@ -331,3 +331,16 @@ body.sx-on #app { display: none; }
 }
 .sx .rack { grid-area: auto; }
 .sx-offer small, .sx-item-desc small { text-transform: none; letter-spacing: 0; font-size: 0.72rem; }
+
+/* ---------- Menu de partie, jeu en ligne ---------- */
+.sx-names[hidden] { display: none; }
+.sx-names-title { text-align: center; color: var(--sx-gold); }
+.sx-sep { display: flex; align-items: center; gap: 8px; color: var(--sx-muted); font-size: 0.8rem; }
+.sx-sep::before, .sx-sep::after { content: ''; flex: 1; border-top: 1px solid var(--sx-line); }
+.sx-menu-modal { z-index: 40; }
+.sx-menu-btns { display: grid; gap: 8px; margin-top: 10px; }
+.sx-net { display: flex; align-items: center; gap: 8px; padding: 4px 10px; border-radius: 8px; background: var(--sx-panel); font-size: 0.78rem; }
+.sx-net .dot { width: 8px; height: 8px; border-radius: 50%; background: #6b7280; flex: none; }
+.sx-net .dot.on { background: #22c55e; box-shadow: 0 0 6px #22c55e; }
+.sx-net-turn { margin-left: auto; color: var(--sx-muted); }
+.sx-net-turn.mine { color: var(--sx-gold); font-weight: 700; }

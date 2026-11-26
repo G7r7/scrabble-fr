@@ -259,14 +259,23 @@ export function randomCell(): Cell {
   const t = weighted((Object.keys(CELL_TYPES) as CellType[]).filter((x) => x !== 'ROUE').map((x) => [x, CELL_TYPES[x].weight] as [CellType, number]));
   return t === 'RND' ? { t, rnd: pick(['MD', 'MT', 'LD', 'LT'] as const) } : { t };
 }
+/**
+ * Applique une amélioration à une case : seules les caractéristiques fournies changent.
+ * Un type remplace le type (texture gardée), une texture remplace la texture (type gardé).
+ */
+export function mergeCell(cur: Cell, add: Cell, owner?: 0 | 1): Cell {
+  const out: Cell = {};
+  const t = add.t ?? cur.t;
+  if (t) out.t = t;
+  if (t === 'RND') out.rnd = add.t ? (add.rnd ?? pick(['MD', 'MT', 'LD', 'LT'] as const)) : cur.rnd;
+  const x = add.x ?? cur.x;
+  if (x) out.x = x;
+  const o = owner ?? cur.o;
+  if (o !== undefined) out.o = o;
+  return out;
+}
 function improveCell(g: SGame, r: number, c: number, owner: 0 | 1) {
-  const cur = g.cells[r][c];
-  const add = randomCell();
-  // Une amélioration s'ajoute : une texture garde le type de la case, et inversement.
-  g.cells[r][c] = { ...(add.x ? { t: cur.t, rnd: cur.rnd } : { x: cur.x }), ...add, o: owner };
-  if (!g.cells[r][c].t) delete g.cells[r][c].t;
-  if (!g.cells[r][c].x) delete g.cells[r][c].x;
-  if (!g.cells[r][c].rnd) delete g.cells[r][c].rnd;
+  g.cells[r][c] = mergeCell(g.cells[r][c], randomCell(), owner);
 }
 function baseCells(g: SGame): [number, number][] {
   const out: [number, number][] = [];
@@ -1396,7 +1405,7 @@ export function applyOffer(g: SGame, pi: number, o: Offer): BuyResult {
     case 'cell':
       g.pending = { type: 'cell', cell: structuredClone(o.cell) };
       g.pendingFor = pi as 0 | 1;
-      return { ok: true, msg: 'Touchez la case du plateau à remplacer.' };
+      return { ok: true, msg: 'Touchez la case du plateau à améliorer.' };
     case 'power':
       if (p.powers.length >= MAX_POWERS) return { ok: false, error: `${MAX_POWERS} tuiles pouvoir au maximum.` };
       p.powers.push({ uid: ++g.seq, id: o.id, price: POWER_PRICE[POWERS[o.id].rarity], n: 0 });
@@ -1417,11 +1426,10 @@ export function skipPending(g: SGame) {
 
 export function placeCell(g: SGame, pi: number, r: number, c: number): BuyResult {
   if (g.pending?.type !== 'cell') return { ok: false, error: 'Aucune case à poser.' };
-  const cell: Cell = { ...g.pending.cell, o: pi as 0 | 1 };
-  if (cell.t === 'RND' && !cell.rnd) cell.rnd = pick(['MD', 'MT', 'LD', 'LT'] as const);
-  g.cells[r][c] = cell;
+  if (r < 0 || r >= SIZE || c < 0 || c >= SIZE) return { ok: false, error: 'Case hors du plateau.' };
+  g.cells[r][c] = mergeCell(g.cells[r][c], g.pending.cell, pi as 0 | 1);
   g.pending = null;
-  return { ok: true, msg: 'Case posée sur le plateau.' };
+  return { ok: true, msg: 'Case améliorée.' };
 }
 
 export function sellPower(g: SGame, pi: number, uid: number): BuyResult {

@@ -39,8 +39,11 @@ Scrabble en français, à jouer dans le navigateur contre l'ordinateur.
   un niveau spécial à lettre grecque tous les trois niveaux). Entre deux niveaux, le magasin vend des tuiles lettres spéciales
   (textures, éditions, polices, pastilles, styles), des cases spéciales à poser sur le plateau, des tuiles pouvoir (7 au plus,
   revendables à moitié prix), des programmes et des améliorations de lettre, à l'unité ou en paquets. Victoire au niveau 15,
-  puis niveaux sans fin si on le souhaite. Trois versions : **solo**, **coopératif** et **compétitif**, à deux sur le même
-  appareil (écran de passage entre les tours). Code : `src/scralatro/` (moteur testé dans `tests/scralatro.test.ts`).
+  puis niveaux sans fin si on le souhaite. Trois versions : **solo**, **coopératif** et **compétitif** ; à deux, on joue
+  **en ligne** (lien à envoyer, partie gardée et arbitrée par le serveur de jeu, comme le Scrabble en ligne) ou sur le même
+  appareil (écran de passage entre les tours). Le bouton ☰ ou la touche Échap ouvre le menu de partie : reprendre,
+  abandonner, recommencer dans le même mode ou choisir un autre mode. Code : `src/scralatro/` (moteur testé dans
+  `tests/scralatro.test.ts` ; `remote.ts` : actions des joueurs, partagées par l'appli et le serveur).
 - **Écran toujours allumé** tant que l'appli est affichée (Screen Wake Lock), pour que le téléphone ne se mette pas en veille pendant la réflexion.
 - Animations (pose des lettres, décompte mot par mot, compteur de points) et sons synthétisés, volume général réglable.
 - **Musique de fond** : le bouton musique passe de « coupée » à **jazz** (swing léger), puis à **classique**, et sa couleur
