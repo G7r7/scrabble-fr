@@ -418,6 +418,7 @@ export class Scralatro {
         ${this.netBar()}
         ${sp ? `<p class="sx-special"><b>${sp.letter} ${sp.name}</b> ${esc(sp.desc)}</p>` : ''}
         ${this.powersHtml()}
+        ${this.otherPowersHtml()}
         <div class="sx-board-wrap"><div class="board sx-board" id="sxBoard">${this.boardHtml()}</div></div>
         <div class="sx-preview" id="sxPreview"></div>
         <div class="rack sx-rack ${this.exch ? 'exchange' : ''}" id="sxRack">${this.rackHtml()}</div>
@@ -512,6 +513,20 @@ export class Scralatro {
       const cls = [this.sel === id ? 'selected' : '', this.exch?.has(id) ? 'marked' : '', lv.special === 'rho' && p.rho === id ? 'rho' : ''].join(' ');
       return tileHtml(g, t, cls).replace('<div ', `<div title="${esc(tileTitle(t))}" `);
     }).join('');
+  }
+
+  /** À deux : tuiles pouvoir de l'autre joueur (touchez-en une pour sa description). */
+  private otherPowersHtml(): string {
+    const g = this.g!;
+    if (g.players.length < 2) return '';
+    const oi = 1 - this.me;
+    const o = g.players[oi];
+    const chips = o.powers.map((x) => {
+      const info = POWERS[x.id];
+      return `<button class="sx-ochip ${RARITY_CLS[info.rarity]}" data-a="opower" data-uid="${x.uid}" title="${esc(`${info.name} : ${info.desc}`)}"><span>${info.icon}</span>${esc(info.name.replace(/^(Le |La |Les |L’)/, ''))}</button>`;
+    }).join('');
+    const res = o.reserve ? `<span class="sx-ochip res" title="${esc(`Réserve : ${PROGRAMS[o.reserve].name}`)}">${PROGRAMS[o.reserve].icon}</span>` : '';
+    return `<div class="sx-others pc-${oi}"><b>${esc(o.name)}</b>${chips || '<span class="muted">aucun pouvoir</span>'}${res}</div>`;
   }
 
   private powersHtml(): string {
@@ -788,6 +803,11 @@ export class Scralatro {
     }
     if (a === 'power') { const uid = Number(el!.dataset.uid); this.selPower = this.selPower === uid ? null : uid; return this.render(); }
     if (a === 'bag') return this.showBag();
+    if (a === 'opower') {
+      const x = g.players[1 - this.me]?.powers.find((y) => y.uid === Number(el!.dataset.uid));
+      if (x) { const info = POWERS[x.id]; this.say(`${g.players[1 - this.me].name} — ${info.icon} ${info.name} (${info.rarity}) : ${info.desc}`); }
+      return;
+    }
     if (a === 'tab-partner') { this.watch = true; this.peekItem = null; return this.render(); }
     if (a === 'tab-mine') { this.watch = false; this.peekItem = null; return this.render(); }
     if (a === 'peek') { const i = Number(el!.dataset.i); this.peekItem = this.peekItem === i ? null : i; return this.render(); }
