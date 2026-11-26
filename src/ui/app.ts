@@ -20,6 +20,7 @@ import { ChallengeScene } from './challenge';
 import { Notifier, bindInstall, notifSupported } from './notify';
 import { clearOds, loadOds, saveOds } from '../dict/store';
 import { normalizeWord } from '../dict/normalize.js';
+import { Scralatro, scralatroWasActive } from '../scralatro/ui';
 
 interface RackTile { id: number; letter: string }
 interface PendingTile extends RackTile { r: number; c: number; assigned: string }
@@ -119,6 +120,8 @@ export class App {
   private shown: [number, number] | null = null; // scores affichés (pendant le défilement)
   private fxDone: Promise<void> = Promise.resolve();
   private notifier = new Notifier();
+  /** Mode SCRALATRO (créé à la première ouverture). */
+  private sx: Scralatro | null = null;
 
   private el = {} as Record<
     'board' | 'rack' | 'preview' | 'scores' | 'bag' | 'history' | 'actions' | 'dict' | 'status' |
@@ -158,6 +161,7 @@ export class App {
     this.syncRack();
     this.render();
     this.soloNext();
+    if (scralatroWasActive()) this.openScralatro();
 
     lsDel('scrabble-fr-hote'); // ancienne sauvegarde de l'hôte (avant le serveur de jeu)
     const params = new URLSearchParams(location.search);
@@ -1086,6 +1090,8 @@ export class App {
       body.innerHTML = `
         <h2>Nouvelle partie</h2>
         <section id="olGames" class="my-games" hidden></section>
+        <button type="button" class="sx-entry" data-ol="scralatro"><b>SCRA<span>LATRO</span></b>
+          <small>Nouveau mode : objectifs de score, magasin et tuiles pouvoir. Solo, coopératif ou compétitif.</small></button>
         <section class="setup" data-opp="${opp}" data-variant="${variant}" aria-label="Nouvelle partie">
           <div class="setup-row"><span class="setup-label">Contre</span>${seg('olOpp',
             [{ id: 'solo', label: 'L’ordinateur' }, { id: 'online', label: 'En ligne' }], opp, 'Adversaire')}</div>
@@ -1205,6 +1211,7 @@ export class App {
         lsSet(DICT_KEY, dict);
         this.createGame({ variant, theme, dict, minutes });
       }
+      else if (a === 'scralatro') { this.closeLobby(); this.openScralatro(); }
       else if (a === 'lists') this.openLists();
       else if (a === 'close' || a === 'cancel') cancel();
       else if (a === 'menu') this.lobby('menu');
@@ -1256,6 +1263,18 @@ export class App {
         if (t.value === 'online') body.querySelector<HTMLInputElement>('#olName')?.focus();
       }
     });
+  }
+
+  // ---------- SCRALATRO ----------
+
+  /** Ouvre le mode SCRALATRO ; il vérifie ses mots avec la liste chargée dans le moteur. */
+  private openScralatro() {
+    this.sx ??= new Scralatro({
+      lex: { invalid: (words) => this.invalid(words) },
+      sound: this.sound, fx: this.fx,
+      onExit: () => this.render(),
+    });
+    this.sx.open();
   }
 
   // ---------- Listes de mots : explorateur ----------
