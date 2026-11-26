@@ -2,7 +2,7 @@
 // Sert à la fois au jeu sur un appareil (appel direct) et au serveur de jeu en ligne (qui arbitre).
 import { SIZE } from '../game/constants';
 import {
-  applyOffer, buy, checkAfterSale, continueAfterWin, endTurn, exchangeTiles, geometry, has, LAST_LEVEL, leaveShop,
+  applyOffer, buy, checkAfterSale, migrateScralatro, shopping, continueAfterWin, endTurn, exchangeTiles, geometry, has, LAST_LEVEL, leaveShop,
   movePower, passTurn, placeCell, rerollShop, resolveMove, runProgram, sellPower, skipPending, useReserve, validate,
   type Lex, type MoveResult, type Req, type SGame, type TurnEnd,
 } from './engine';
@@ -23,7 +23,9 @@ export type SxOp =
   | { k: 'program'; ids: number[]; letter?: string }
   | { k: 'continue' }
   | { k: 'finish' }
-  | { k: 'abandon' };
+  | { k: 'abandon' }
+  /** Article regardé au magasin (montré au partenaire). */
+  | { k: 'look'; i: number | null };
 
 /** Ce qui s'est passé, pour l'affichage (décompte du coup, messages, niveau réussi…). */
 export interface SxEvent {
@@ -37,11 +39,16 @@ export interface SxEvent {
 }
 export type SxResult = { ok: true; ev: SxEvent } | { ok: false; error: string };
 
-/** Joueur qui doit agir : choix en cours, magasin, ou tour de jeu. */
+/** Joueur qui doit agir (le premier au magasin s'ils y sont ensemble), pour l'affichage. */
 export function actor(g: SGame): 0 | 1 {
-  if (g.pending) return g.pendingFor;
   if (g.phase === 'shop') return (g.shopQueue[0] ?? 0) as 0 | 1;
   return g.cur;
+}
+/** Le joueur peut-il agir maintenant ? Au magasin, les joueurs coopératifs en ligne achètent en même temps. */
+export function mayAct(g: SGame, seat: number): boolean {
+  if (g.phase === 'over' || g.won) return false;
+  if (g.phase === 'shop') return shopping(g).includes(seat);
+  return g.cur === seat;
 }
 
 const int = (v: unknown, min: number, max: number): number | null =>
@@ -77,6 +84,7 @@ export function parseSxOp(raw: unknown): SxOp | null {
     }
     case 'pass': case 'reserve': case 'reroll': case 'leave': case 'skip': case 'continue': case 'finish': case 'abandon':
       return { k: o.k };
+    case 'look': return { k: 'look', i: o.i === null ? null : int(o.i, 0, 10) };
     default: return null;
   }
 }
@@ -88,9 +96,11 @@ export function parseSxOp(raw: unknown): SxOp | null {
 export async function applySxOp(g: SGame, seat: 0 | 1, op: SxOp, lex: Lex): Promise<SxResult> {
   const ev = (extra: Partial<SxEvent> = {}): SxResult => ({ ok: true, ev: { by: seat, k: op.k, ...extra } });
   const fail = (error: string): SxResult => ({ ok: false, error });
+  migrateScralatro(g);
   if (op.k === 'abandon') {
     if (g.phase === 'over') return fail('La partie est déjà finie.');
-    g.phase = 'over'; g.won = false; g.pending = null;
+    g.phase = 'over'; g.won = false;
+    for (const p of g.players) p.pending = null;
     g.overText = g.players.length > 1 ? `${g.players[seat].name} a abandonné la partie.` : 'Partie abandonnée.';
     return ev();
   }
@@ -102,9 +112,10 @@ export async function applySxOp(g: SGame, seat: 0 | 1, op: SxOp, lex: Lex): Prom
     return ev();
   }
   if (g.won) return fail('Choisissez d’abord de continuer ou de terminer la partie.');
-  if (seat !== actor(g)) return fail('Ce n’est pas à vous.');
+  if (!mayAct(g, seat)) return fail(g.phase === 'shop' ? 'Vous avez terminé vos achats : votre partenaire finit les siens.' : 'Ce n’est pas à vous.');
   const pi = seat;
-  const play = g.phase === 'play' && !g.pending;
+  const me = g.players[pi];
+  const play = g.phase === 'play' && !me.pending;
 
   switch (op.k) {
     case 'play': {
@@ -149,24 +160,24 @@ export async function applySxOp(g: SGame, seat: 0 | 1, op: SxOp, lex: Lex): Prom
       return r.ok ? ev({ msg: r.msg }) : fail(r.error);
     }
     case 'reroll': {
-      if (g.phase !== 'shop' || g.pending) return fail('Le magasin est fermé.');
+      if (g.phase !== 'shop' || me.pending) return fail('Le magasin est fermé.');
       const err = rerollShop(g, pi);
       return err ? fail(err) : ev({ msg: 'Nouveaux articles !' });
     }
     case 'leave': {
       if (g.phase !== 'shop') return fail('Le magasin est fermé.');
-      return ev({ msg: leaveShop(g).join(' · ') });
+      return ev({ msg: leaveShop(g, pi).join(' · ') });
     }
     case 'offer': {
-      if (g.pending?.type !== 'choose') return fail('Aucun paquet ouvert.');
-      const o = g.pending.offers[op.i];
+      if (me.pending?.type !== 'choose') return fail('Aucun paquet ouvert.');
+      const o = me.pending.offers[op.i];
       if (!o) return fail('Choix invalide.');
       const r = applyOffer(g, pi, o);
       return r.ok ? ev({ msg: r.msg }) : fail(r.error);
     }
     case 'skip': {
-      if (!g.pending) return fail('Rien à annuler.');
-      skipPending(g);
+      if (!me.pending) return fail('Rien à annuler.');
+      skipPending(g, pi);
       return ev();
     }
     case 'cell': {
@@ -176,6 +187,11 @@ export async function applySxOp(g: SGame, seat: 0 | 1, op: SxOp, lex: Lex): Prom
     case 'program': {
       const r = runProgram(g, pi, op.ids, op.letter);
       return r.ok ? ev({ msg: r.msg }) : fail(r.error);
+    }
+    case 'look': {
+      if (!me.shop) return fail('Le magasin est fermé.');
+      me.shop.look = op.i;
+      return ev();
     }
   }
 }
@@ -199,6 +215,6 @@ export function sxView(g: SGame, seat: 0 | 1): SGame {
       delete p.shop;
     }
   });
-  if (v.pending?.type === 'program' && v.pendingFor !== seat) v.pending.drawn = [];
+  v.players.forEach((p, i) => { if (i !== seat && p.pending?.type === 'program') p.pending.drawn = []; });
   return v;
 }

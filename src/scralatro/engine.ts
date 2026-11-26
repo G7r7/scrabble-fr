@@ -61,7 +61,11 @@ export type Offer =
   | { kind: 'upgrade'; letter: string };
 export type PackKind = 'tile' | 'cell' | 'power' | 'program' | 'upgrade';
 export type ShopItem = (Offer | { kind: 'pack'; of: PackKind; size: 3 | 6 }) & { price: number; sold?: boolean };
-export interface Shop { items: ShopItem[]; reroll: number; bought: boolean }
+export interface Shop {
+  items: ShopItem[]; reroll: number; bought: boolean;
+  /** Article que le joueur regarde (montré à son partenaire en ligne). */
+  look?: number | null;
+}
 export type Pending =
   | { type: 'choose'; title: string; offers: Offer[] }
   | { type: 'cell'; cell: Cell }
@@ -87,6 +91,8 @@ export interface SPlayer {
   rho?: number; psi?: number; idole?: string;
   lastPlaced: number[];
   shop?: Shop;
+  /** Paquet ouvert, case à poser ou programme en cours (propre à chaque joueur : on peut acheter en même temps). */
+  pending?: Pending | null;
 }
 export interface LogEntry { p: number; text: string; score?: number; kind?: 'play' | 'info' | 'level' | 'bad' }
 export interface SGame {
@@ -100,7 +106,8 @@ export interface SGame {
   phase: 'shop' | 'play' | 'over';
   /** Joueurs qui doivent encore passer au magasin. */
   shopQueue: number[];
-  pending: Pending | null; pendingFor: 0 | 1;
+  /** Coopération en ligne : les joueurs font leurs achats en même temps (sinon chacun son tour). */
+  together?: boolean;
   /** Compétition : tours consécutifs sans pose, plateaux vidés. */
   idle: number; clears: number;
   won: boolean; continued: boolean; overText?: string;
@@ -160,14 +167,14 @@ function newPlayer(g: SGame, name: string, own: 0 | 1): SPlayer {
 export function newScralatro(mode: Mode, names: string[] = []): SGame {
   const g: SGame = {
     v: 1, mode, players: [], cur: 0, board: emptyBoard(), cells: newCells(),
-    lvl: newLevel(1, null), next: randomSpecial(3), phase: 'shop', shopQueue: [], pending: null, pendingFor: 0,
+    lvl: newLevel(1, null), next: randomSpecial(3), phase: 'shop', shopQueue: [],
     idle: 0, clears: 0, won: false, continued: false, log: [], seq: 0,
   };
   const n = mode === 'solo' ? 1 : 2;
   for (let i = 0; i < n; i++) g.players.push(newPlayer(g, names[i] || (n === 1 ? 'Vous' : `Joueur ${i + 1}`), i as 0 | 1));
   if (mode === 'compet') for (const p of g.players) { p.lvl = newLevel(1, null); p.next = randomSpecial(3); }
   g.shopQueue = g.players.map((_, i) => i);
-  openShop(g, 0);
+  openShops(g);
   log(g, 0, `Nouvelle partie ${mode === 'solo' ? 'solo' : mode === 'coop' ? 'en coopération' : 'en compétition'} : ${START_MONEY} $ pour commencer, direction le magasin !`, 'level');
   return g;
 }
@@ -1146,7 +1153,7 @@ function completeLevel(g: SGame): NonNullable<TurnEnd['levelDone']> {
   g.lvl = newLevel(n, special);
   g.phase = 'shop';
   g.shopQueue = g.players.map((_, i) => i);
-  openShop(g, 0);
+  openShops(g);
   return { player: 0, reward, details };
 }
 
@@ -1321,9 +1328,19 @@ export function offerPrice(o: Offer): number {
 }
 export const packPrice = (of: PackKind, size: 3 | 6) => (of === 'power' ? 6 : size === 3 ? 4 : 6);
 
+/** Pouvoirs proposés dans le magasin ouvert de l'autre joueur (deux magasins ouverts ne proposent pas le même). */
+function powersElsewhere(g: SGame, pi: number): Set<string> {
+  const out = new Set<string>();
+  g.players.forEach((p, i) => {
+    if (i === pi) return;
+    for (const it of p.shop?.items ?? []) if (it.kind === 'power' && !it.sold) out.add(it.id);
+    if (p.pending?.type === 'choose') for (const o of p.pending.offers) if (o.kind === 'power') out.add(o.id);
+  });
+  return out;
+}
 function genShop(g: SGame, pi: number): ShopItem[] {
   const items: ShopItem[] = [];
-  const used = new Set<string>();
+  const used = powersElsewhere(g, pi);
   for (let i = 0; i < 3; i++) {
     let o: Offer;
     let guard = 0;
@@ -1331,7 +1348,7 @@ function genShop(g: SGame, pi: number): ShopItem[] {
       const kind = weighted<PackKind>([['power', 34], ['tile', 24], ['cell', 18], ['program', 14], ['upgrade', 10]]);
       o = randomOffer(g, pi, kind);
       guard++;
-    } while (o.kind === 'power' && used.has(o.id) && guard < 20);
+    } while (o.kind === 'power' && used.has(o.id) && guard < 40);
     if (o.kind === 'power') used.add(o.id);
     items.push({ ...o, price: offerPrice(o) });
   }
@@ -1342,6 +1359,23 @@ function genShop(g: SGame, pi: number): ShopItem[] {
   }
   return items;
 }
+/** Assez de pouvoirs différents pour deux magasins ouverts en même temps (sans doublon) ? */
+function enoughForTogether(g: SGame): boolean {
+  const free = (pi: number) => POWER_IDS.filter((id) => !g.players[pi].powers.some((x) => x.id === id)).length;
+  // Chaque magasin montre au plus 3 pouvoirs à l'unité, et un paquet de pouvoirs en propose 3.
+  return g.players.every((_, i) => free(i) >= 12);
+}
+/**
+ * Ouvre le magasin : en coopération en ligne, pour tous les joueurs à la fois (tant qu'il reste assez
+ * de pouvoirs différents) ; sinon pour le premier de la file, les autres attendent leur tour.
+ */
+export function openShops(g: SGame) {
+  const together = !!g.together && g.mode === 'coop' && g.shopQueue.length > 1 && enoughForTogether(g);
+  const who = together ? g.shopQueue : g.shopQueue.slice(0, 1);
+  for (const pi of who) if (!g.players[pi].shop) openShop(g, pi);
+}
+/** Joueurs qui ont un magasin ouvert (peuvent acheter maintenant). */
+export const shopping = (g: SGame): number[] => (g.phase === 'shop' ? g.shopQueue.filter((i) => !!g.players[i].shop) : []);
 export function openShop(g: SGame, pi: number) {
   g.players[pi].shop = { items: genShop(g, pi), reroll: REROLL_PRICE, bought: false };
 }
@@ -1366,7 +1400,7 @@ export function buy(g: SGame, pi: number, idx: number): BuyResult {
   const s = p.shop;
   const it = s?.items[idx];
   if (!s || !it || it.sold) return { ok: false, error: 'Article indisponible.' };
-  if (g.pending) return { ok: false, error: 'Terminez d’abord l’achat en cours.' };
+  if (p.pending) return { ok: false, error: 'Terminez d’abord l’achat en cours.' };
   const price = priceFor(g, pi, it.price);
   if (p.money < price) return { ok: false, error: 'Pas assez d’argent.' };
   if (it.kind === 'power' && p.powers.length >= MAX_POWERS) return { ok: false, error: `${MAX_POWERS} tuiles pouvoir au maximum : vendez-en une d’abord.` };
@@ -1375,15 +1409,15 @@ export function buy(g: SGame, pi: number, idx: number): BuyResult {
   it.sold = true;
   if (it.kind === 'pack') {
     const offers: Offer[] = [];
-    const seen = new Set<string>();
+    const seen = powersElsewhere(g, pi);
+    for (const x of s.items) if (x.kind === 'power' && !x.sold) seen.add(x.id);
     for (let i = 0; i < it.size; i++) {
       let o: Offer, guard = 0;
-      do { o = randomOffer(g, pi, it.of); guard++; } while (o.kind === 'power' && seen.has(o.id) && guard < 20);
+      do { o = randomOffer(g, pi, it.of); guard++; } while (o.kind === 'power' && seen.has(o.id) && guard < 40);
       if (o.kind === 'power') seen.add(o.id);
       offers.push(o);
     }
-    g.pending = { type: 'choose', title: packTitle(it.of, it.size), offers };
-    g.pendingFor = pi as 0 | 1;
+    p.pending = { type: 'choose', title: packTitle(it.of, it.size), offers };
     return { ok: true, msg: 'Choisissez un élément du paquet.' };
   }
   return applyOffer(g, pi, it);
@@ -1395,7 +1429,7 @@ export function packTitle(of: PackKind, size: number) {
 
 export function applyOffer(g: SGame, pi: number, o: Offer): BuyResult {
   const p = g.players[pi];
-  g.pending = null;
+  p.pending = null;
   switch (o.kind) {
     case 'tile': {
       const t = { ...structuredClone(o.tile), id: ++g.seq };
@@ -1403,8 +1437,7 @@ export function applyOffer(g: SGame, pi: number, o: Offer): BuyResult {
       return { ok: true, msg: `Tuile ${letterOf(t) === '?' ? 'joker' : letterOf(t)} ajoutée à votre sac.` };
     }
     case 'cell':
-      g.pending = { type: 'cell', cell: structuredClone(o.cell) };
-      g.pendingFor = pi as 0 | 1;
+      p.pending = { type: 'cell', cell: structuredClone(o.cell) };
       return { ok: true, msg: 'Touchez la case du plateau à améliorer.' };
     case 'power':
       if (p.powers.length >= MAX_POWERS) return { ok: false, error: `${MAX_POWERS} tuiles pouvoir au maximum.` };
@@ -1418,17 +1451,19 @@ export function applyOffer(g: SGame, pi: number, o: Offer): BuyResult {
   }
 }
 /** Le joueur renonce au paquet ouvert. */
-export function skipPending(g: SGame) {
-  const pd = g.pending;
-  if (pd?.type === 'program' && !pd.fromReserve) { const p = g.players[g.pendingFor]; p.bag.push(...pd.drawn); shuffle(p.bag); }
-  g.pending = null;
+export function skipPending(g: SGame, pi: number) {
+  const p = g.players[pi];
+  const pd = p.pending;
+  if (pd?.type === 'program' && !pd.fromReserve) { p.bag.push(...pd.drawn); shuffle(p.bag); }
+  p.pending = null;
 }
 
 export function placeCell(g: SGame, pi: number, r: number, c: number): BuyResult {
-  if (g.pending?.type !== 'cell') return { ok: false, error: 'Aucune case à poser.' };
+  const p = g.players[pi];
+  if (p.pending?.type !== 'cell') return { ok: false, error: 'Aucune case à poser.' };
   if (r < 0 || r >= SIZE || c < 0 || c >= SIZE) return { ok: false, error: 'Case hors du plateau.' };
-  g.cells[r][c] = mergeCell(g.cells[r][c], g.pending.cell, pi as 0 | 1);
-  g.pending = null;
+  g.cells[r][c] = mergeCell(g.cells[r][c], p.pending.cell, pi as 0 | 1);
+  p.pending = null;
   return { ok: true, msg: 'Case améliorée.' };
 }
 
@@ -1462,13 +1497,14 @@ export function movePower(g: SGame, pi: number, uid: number, dir: -1 | 1) {
   [a[i], a[j]] = [a[j], a[i]];
 }
 
-/** Quitte le magasin : joueur suivant au magasin, ou reprise du jeu. */
-export function leaveShop(g: SGame): string[] {
-  const pi = g.shopQueue.shift();
-  if (pi !== undefined) delete g.players[pi].shop;
-  if (g.pending?.type === 'program') skipPending(g);
-  g.pending = null;
-  if (g.shopQueue.length) { openShop(g, g.shopQueue[0]); return []; }
+/** Le joueur pi (par défaut le premier de la file) quitte le magasin : joueur suivant, ou reprise du jeu. */
+export function leaveShop(g: SGame, who?: number): string[] {
+  const pi = who ?? g.shopQueue[0];
+  if (pi === undefined || !g.shopQueue.includes(pi)) return [];
+  g.shopQueue = g.shopQueue.filter((i) => i !== pi);
+  delete g.players[pi].shop;
+  skipPending(g, pi);
+  if (g.shopQueue.length) { openShops(g); return []; }
   if (g.mode === 'compet') {
     const first = g.players.every((p) => !p.rack.length) && g.board.every((r) => r.every((t) => !t));
     g.phase = 'play';
@@ -1506,8 +1542,7 @@ export function startProgram(g: SGame, pi: number, id: ProgramId, fromReserve: b
       finishProgramCommon(g, pi, id);
       return { ok: true, msg: `${info.name} : ${lines.join(', ')}${lines.length ? ' ; ' : ''}${added.map(letterOf).join(', ')} ajoutées à votre sac.` };
     }
-    g.pending = { type: 'program', id, fromReserve, drawn };
-    g.pendingFor = pi as 0 | 1;
+    p.pending = { type: 'program', id, fromReserve, drawn };
     return { ok: true, msg: `${info.name} : ${info.pick[0] === info.pick[1] ? `choisissez ${info.pick[0]} tuile${info.pick[0] > 1 ? 's' : ''}` : `choisissez jusqu’à ${info.pick[1]} tuiles`}.` };
   }
   let msg = '';
@@ -1537,9 +1572,9 @@ function finishProgramCommon(g: SGame, pi: number, id: ProgramId) {
 
 /** Exécute un programme à choix sur les tuiles sélectionnées (dans l'ordre de sélection). */
 export function runProgram(g: SGame, pi: number, ids: number[], letter?: string): BuyResult {
-  const pd = g.pending;
-  if (pd?.type !== 'program') return { ok: false, error: 'Aucun programme en cours.' };
   const p = g.players[pi];
+  const pd = p.pending;
+  if (pd?.type !== 'program') return { ok: false, error: 'Aucun programme en cours.' };
   const info = PROGRAMS[pd.id];
   const pool = pd.fromReserve ? p.rack : pd.drawn;
   const sel = ids.map((id) => pool.find((t) => t.id === id)).filter((t): t is STile => !!t && t.l !== '#');
@@ -1603,7 +1638,7 @@ export function runProgram(g: SGame, pi: number, ids: number[], letter?: string)
     default: break;
   }
   if (!pd.fromReserve) { p.bag.push(...pd.drawn.filter((t) => !gone.has(t.id))); shuffle(p.bag); }
-  g.pending = null;
+  p.pending = null;
   finishProgramCommon(g, pi, pd.id);
   return { ok: true, msg };
 }
@@ -1611,7 +1646,7 @@ export function runProgram(g: SGame, pi: number, ids: number[], letter?: string)
 export function useReserve(g: SGame, pi: number): BuyResult {
   const p = g.players[pi];
   if (!p.reserve) return { ok: false, error: 'Réserve vide.' };
-  if (g.pending) return { ok: false, error: 'Terminez d’abord l’action en cours.' };
+  if (p.pending) return { ok: false, error: 'Terminez d’abord l’action en cours.' };
   const id = p.reserve;
   p.reserve = null;
   // En jeu, on choisit parmi les lettres du chevalet ; au magasin (chevalet vide), on pioche dans le sac.
@@ -1627,9 +1662,26 @@ export function loadScralatro(): SGame | null {
   try {
     const raw = localStorage.getItem(SAVE_KEY);
     const g = raw ? (JSON.parse(raw) as SGame) : null;
-    return g && g.v === 1 ? g : null;
+    return g && g.v === 1 ? migrateScralatro(g) : null;
   } catch { return null; }
 }
 
 /** Le joueur pi continue après la victoire au niveau 15. */
 export function continueAfterWin(g: SGame) { g.won = false; g.continued = true; }
+
+/**
+ * Met à jour une partie sauvegardée par une version précédente : l'action en cours (paquet, case, programme)
+ * était commune à la partie, elle est maintenant propre à chaque joueur. Ouvre aussi les magasins manquants
+ * quand les achats se font en même temps.
+ */
+export function migrateScralatro(g: SGame): SGame {
+  const old = g as SGame & { pending?: Pending | null; pendingFor?: 0 | 1 };
+  if ('pending' in old || 'pendingFor' in old) {
+    const pd = old.pending;
+    if (pd) { const p = g.players[old.pendingFor ?? 0]; if (p) p.pending = pd; }
+    delete old.pending;
+    delete old.pendingFor;
+  }
+  if (g.phase === 'shop') openShops(g);
+  return g;
+}

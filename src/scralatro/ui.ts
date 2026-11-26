@@ -15,7 +15,7 @@ import {
   type Cell, type Lex, type MoveResult, type Offer, type PowerInst, type Req, type SGame, type STile, type ShopItem,
   type TurnEnd,
 } from './engine';
-import { actor, applySxOp, type SxEvent, type SxOp } from './remote';
+import { actor, applySxOp, mayAct, type SxEvent, type SxOp } from './remote';
 import type { ClientMsg, ServerMsg } from '../net/protocol';
 
 /** Jeu en ligne : l'appli crée la partie sur le serveur (avec son écran d'attente) et gère la connexion. */
@@ -111,6 +111,9 @@ export class Scralatro {
   private statusBad = false;
   /** Menu de partie (bouton ☰ ou Échap). */
   private menuOpen = false;
+  /** En ligne, au magasin : on regarde le magasin du partenaire ; article qu'on y examine. */
+  private watch = false;
+  private peekItem: number | null = null;
   /** Partie en ligne : envoi au serveur, code, place du joueur, adversaire connecté. */
   private net: { send: (m: ClientMsg) => void; code: string } | null = null;
   private seat: 0 | 1 = 0;
@@ -161,7 +164,7 @@ export class Scralatro {
   private resetUi() {
     this.pend.clear(); this.sel = null; this.exch = null; this.selPower = null; this.selItem = null;
     this.progSel = []; this.progLetter = ''; this.shownPlayer = -1; this.status = ''; this.rackOrder = [];
-    this.menuOpen = false; this.busy = false;
+    this.menuOpen = false; this.busy = false; this.watch = false; this.peekItem = null;
   }
 
   // ---------- En ligne ----------
@@ -214,21 +217,53 @@ export class Scralatro {
     if (!ev) return this.render();
     const turnBefore = prev ? actor(prev) === this.seat : false;
     if (ev.by === this.seat) this.pend.clear();
+    else if (this.pend.size) {
+      // Coup préparé : les lettres restent posées si leurs cases sont encore libres et le placement toujours jouable.
+      const g = m.state;
+      const rackIds = new Set(g.players[this.seat].rack.map((t) => t.id));
+      const qs = [...this.pend];
+      const lost = qs.some(([id, q]) => !rackIds.has(id) || g.phase !== 'play' || !!g.board[q.r][q.c]);
+      const broken = !lost && this.preparedOk && !geometry(g, this.seat, this.reqs()).ok;
+      if (lost || broken) { this.pend.clear(); this.bumped = g.phase === 'play'; }
+    }
     this.render();
     this.shows = this.shows.then(async () => {
       if (this.g !== m.state) { this.render(); return; }
       await this.present(ev);
       if (this.g === m.state && !turnBefore && actor(m.state) === this.seat && m.state.phase !== 'over') this.deps.sound.turn();
+      this.preparedNotice(ev);
       this.render();
     });
+  }
+
+  /** Après le coup de l'autre : signale le coup préparé (prêt, ou lettres rendues). */
+  private preparedNotice(ev: SxEvent) {
+    const g = this.g;
+    if (!g || ev.by === this.seat) return;
+    const who = g.players[ev.by]?.name ?? 'Votre partenaire';
+    const before = this.status && !this.statusBad ? `${this.status} ` : '';
+    if (this.bumped) { this.bumped = false; this.say(`${before}${who} a bloqué votre coup préparé : vos lettres reviennent sur le chevalet.`, true); return; }
+    if (this.pend.size && this.canAct() && geometry(g, this.seat, this.reqs()).ok) this.say(`${before}Votre coup préparé est prêt : touchez « Jouer ».`);
   }
 
   /** Joueur qui doit agir maintenant peut être moi (toujours vrai sur un seul appareil). */
   private canAct(): boolean {
     const g = this.g;
     if (!g || g.phase === 'over' || g.won) return false;
-    return !this.net || actor(g) === this.seat;
+    return !this.net || mayAct(g, this.seat);
   }
+  /** En ligne, pendant le tour de l'autre : on peut préparer son coup (poser ses lettres) sans le jouer. */
+  private canPrepare(): boolean {
+    const g = this.g;
+    return !!this.net && !!g && g.phase === 'play' && !g.won && !this.exch && !this.myPending && !this.canAct();
+  }
+  /** Le coup préparé était bien placé au dernier aperçu ; l'autre joueur l'a bloqué. */
+  private preparedOk = false;
+  private bumped = false;
+  /** Mon action en cours (paquet ouvert, case à poser, programme). */
+  private get myPending() { return this.g?.players[this.me]?.pending ?? null; }
+  /** Partenaire de coopération en ligne (dont on peut regarder le magasin), sinon -1. */
+  private get partner(): number { return this.net && this.g?.mode === 'coop' ? 1 - this.seat : -1; }
 
   /** Envoie une action : appliquée tout de suite sur cet appareil, ou envoyée au serveur en ligne. */
   private async act(op: SxOp): Promise<boolean> {
@@ -344,6 +379,14 @@ export class Scralatro {
   private render() {
     const g = this.g;
     if (!g) return this.menu();
+    // Les fenêtres ouvertes par-dessus (sac, journal, choix d'une lettre) survivent aux mises à jour reçues en ligne.
+    const extras = [...this.root.querySelectorAll<HTMLElement>(':scope > .sx-extra, :scope > .sx-count')];
+    this.renderMain();
+    for (const x of extras) this.root.appendChild(x);
+  }
+  private renderMain() {
+    const g = this.g;
+    if (!g) return this.menu();
     if (this.needHandoff()) return this.renderHandoff();
     const p = g.players[this.me];
     const lv = lvlOf(g, this.me);
@@ -381,8 +424,7 @@ export class Scralatro {
         <div class="sx-actions">${this.actionsHtml()}</div>
         <p class="sx-status ${this.statusBad ? 'bad' : ''}">${esc(this.status)}</p>
       </div>
-      ${g.phase === 'shop' && !g.pending && actor(g) === this.me ? this.shopHtml() : ''}
-      ${g.pending && g.pendingFor === this.me ? this.pendingHtml() : ''}
+      ${this.shopLayer()}
       ${g.phase === 'over' ? this.overHtml() : g.won ? this.wonHtml() : ''}
       ${this.menuOpen ? this.gameMenuHtml() : ''}`;
     void this.updatePreview();
@@ -395,8 +437,10 @@ export class Scralatro {
     const other = g.players[1 - this.seat];
     const a = actor(g);
     const what = g.phase === 'over' ? 'Partie terminée'
-      : a === this.seat ? (g.phase === 'shop' ? 'À vous : magasin' : g.pending ? 'À vous de choisir' : 'À vous de jouer')
-      : g.phase === 'shop' ? `${esc(other.name)} fait ses achats…` : `Au tour de ${esc(other.name)}…`;
+      : g.phase === 'shop' ? (mayAct(g, this.seat)
+        ? (mayAct(g, 1 - this.seat) ? 'Achats en même temps' : 'À vous : magasin')
+        : `${esc(other.name)} fait ses achats…`)
+      : a === this.seat ? (this.myPending ? 'À vous de choisir' : 'À vous de jouer') : `Au tour de ${esc(other.name)}…`;
     return `<div class="sx-net"><span class="dot ${this.peer ? 'on' : ''}" title="${this.peer ? 'Connecté' : 'Hors ligne'}"></span>
       <span>En ligne · <b>${esc(this.net.code)}</b> · ${esc(other.name)}</span><span class="sx-net-turn ${a === this.seat ? 'mine' : ''}">${what}</span></div>`;
   }
@@ -434,7 +478,7 @@ export class Scralatro {
     const pendAt = new Map<number, number>();
     for (const [id, q] of this.pend) pendAt.set(q.r * SIZE + q.c, id);
     const p = g.players[this.me];
-    const cellMode = g.pending?.type === 'cell';
+    const cellMode = this.myPending?.type === 'cell';
     const out: string[] = [];
     for (let r = 0; r < SIZE; r++) for (let c = 0; c < SIZE; c++) {
       const cell = g.cells[r][c];
@@ -532,7 +576,57 @@ export class Scralatro {
   }
 
   // ---------- Magasin ----------
-  private shopHtml(): string {
+  /** Magasin (le mien, ou celui du partenaire en coopération en ligne) et action en cours. */
+  private shopLayer(): string {
+    const g = this.g!;
+    const pd = this.myPending;
+    const mine = g.phase === 'shop' && !!g.players[this.me].shop;
+    const pt = this.partner;
+    const theirs = pt >= 0 && g.phase === 'shop' && !!g.players[pt]?.shop;
+    if (theirs && (!mine || (this.watch && !pd))) return this.partnerShopHtml(pt, mine);
+    if (pd) return this.pendingHtml();
+    return mine ? this.shopHtml(theirs) : '';
+  }
+  private shopTabs(watching: boolean): string {
+    const pt = this.partner;
+    const other = this.g!.players[pt];
+    const look = other.shop?.look;
+    return `<div class="sx-tabs"><button class="${watching ? '' : 'on'}" data-a="tab-mine">Mon magasin</button>
+      <button class="${watching ? 'on' : ''}" data-a="tab-partner">👀 ${esc(other.name)}${other.pending ? ' · paquet ouvert' : look !== null && look !== undefined ? ' · regarde un article' : ''}</button></div>`;
+  }
+  /** Magasin du partenaire, en lecture seule : ce qu'il voit, l'article qu'il regarde, son paquet ouvert. */
+  private partnerShopHtml(pi: number, tabs: boolean): string {
+    const g = this.g!;
+    const p = g.players[pi];
+    const s = p.shop!;
+    const peek = this.peekItem ?? s.look ?? null;
+    const sel = peek !== null ? s.items[peek] : null;
+    const item = (it: ShopItem, i: number) => `<button class="sx-item ${it.sold ? 'sold' : ''} ${peek === i ? 'sel' : ''} ${s.look === i ? 'look' : ''} k-${it.kind}" data-a="peek" data-i="${i}">
+        <div class="sx-item-icon">${this.offerIcon(it)}</div>
+        <span class="sx-item-name">${esc(this.offerName(it))}</span>
+        <span class="sx-price">${it.sold ? 'Vendu' : `${priceFor(g, pi, it.price)} $`}</span>${s.look === i ? '<i class="sx-eye">👀</i>' : ''}</button>`;
+    const pd = p.pending;
+    const pending = !pd ? '' : pd.type === 'choose'
+      ? `<div class="sx-item-desc"><p><b>${esc(p.name)} ouvre : ${esc(pd.title)}</b></p><div class="sx-offers ro">${pd.offers.map((o) => `<div class="sx-offer">
+          <div class="sx-item-icon">${this.offerIcon(o)}</div><b>${esc(this.offerName(o))}</b><small>${this.offerDesc(o)}</small></div>`).join('')}</div></div>`
+      : pd.type === 'cell' ? `<div class="sx-item-desc"><p>${esc(p.name)} choisit où poser :</p>${miniCell(pd.cell)}<p class="sx-hint">${esc(cellInfo(pd.cell))}</p></div>`
+      : `<div class="sx-item-desc"><p>${esc(p.name)} utilise le programme <b>${esc(PROGRAMS[pd.id].name)}</b>.</p></div>`;
+    const mine = g.players[this.me];
+    return `<div class="sx-shop partner">
+      ${tabs ? this.shopTabs(true) : `<p class="sx-shop-sub">Vous avez terminé vos achats. ${esc(p.name)} finit les siens : vous voyez son magasin.</p>`}
+      <div class="sx-shop-head"><h2>${esc(p.name)}</h2><span class="sx-money">${p.money} $</span></div>
+      ${pending}
+      <div class="sx-items">${s.items.slice(0, 3).map((it, i) => item(it, i)).join('')}</div>
+      <div class="sx-items packs">${s.items.slice(3).map((it, i) => item(it, i + 3)).join('')}</div>
+      ${sel ? `<div class="sx-item-desc"><p>${this.offerDesc(sel)}</p>${s.look === peek ? `<p class="sx-hint">👀 ${esc(p.name)} regarde cet article.</p>` : ''}</div>`
+        : '<p class="sx-hint">Touchez un article pour le détail ; 👀 montre ce que regarde votre partenaire.</p>'}
+      <div class="sx-pmini">${p.powers.map((x) => `<span class="sx-power ${RARITY_CLS[POWERS[x.id].rarity]}" title="${esc(`${POWERS[x.id].name} : ${POWERS[x.id].desc}`)}"><span class="em">${POWERS[x.id].icon}</span><span class="nm">${esc(POWERS[x.id].name.replace(/^(Le |La |Les |L’)/, ''))}</span></span>`).join('') || '<span class="sx-hint">Aucun pouvoir.</span>'}</div>
+      <div class="sx-shop-btns">${tabs ? `<button class="sx-btn gold" data-a="tab-mine">Retour à mon magasin (${mine.money} $)</button>` : ''}</div>
+      <p class="sx-status ${this.statusBad ? 'bad' : ''}">${esc(this.status)}</p>
+    </div>`;
+  }
+
+  private shopHtml(tabs = false): string {
     const g = this.g!;
     const pi = this.me;
     const p = g.players[pi];
@@ -551,7 +645,11 @@ export class Scralatro {
     };
     const sel = this.selItem !== null ? s.items[this.selItem] : null;
     const first = g.players.every((x) => x.total === 0) && lv.n === 1 && lv.used === 0 && lv.score === 0;
+    const others = g.shopQueue.filter((i) => i !== pi);
+    const leave = others.length === 0 ? (g.mode === 'compet' && !first ? 'Reprendre la partie ▶' : `Niveau ${lv.n} ▶`)
+      : this.net ? 'Terminer mes achats ✓' : 'Joueur suivant ▶';
     return `<div class="sx-shop">
+      ${tabs ? this.shopTabs(false) : ''}
       <div class="sx-shop-head"><h2>Magasin</h2><span class="sx-money">${p.money} $</span>${g.players.length > 1 ? `<span class="pc-${pi}">${esc(p.name)}</span>` : ''}</div>
       <p class="sx-shop-sub">${first ? 'Vos achats sont actifs dès le niveau 1.' : `Prochain : niveau ${lv.n} — ${lv.target} points${g.mode === 'compet' ? `, récompense ${competReward(lv)} $ (−1 $ par tour)` : ` en ${lv.moves} coups`}.`}</p>
       <div class="sx-boss"><b>${spInfo.letter}</b><div><small>Niveau spécial ${nextN}</small><strong>${spInfo.name}</strong><span>${esc(spInfo.desc)}</span></div></div>
@@ -563,7 +661,7 @@ export class Scralatro {
       <div class="sx-shop-btns">
         <button class="sx-btn" data-a="reroll" ${p.money < s.reroll ? 'disabled' : ''}>Relancer ${s.reroll} $</button>
         <button class="sx-btn" data-a="bag">Mon sac</button>
-        <button class="sx-btn gold" data-a="leave">${g.shopQueue.length > 1 ? 'Joueur suivant ▶' : g.mode === 'compet' && !first ? 'Reprendre la partie ▶' : `Niveau ${lv.n} ▶`}</button>
+        <button class="sx-btn gold" data-a="leave">${leave}</button>
       </div>
       <p class="sx-status ${this.statusBad ? 'bad' : ''}">${esc(this.status)}</p>
     </div>`;
@@ -607,7 +705,7 @@ export class Scralatro {
   // ---------- Actions en attente (paquet, case, programme) ----------
   private pendingHtml(): string {
     const g = this.g!;
-    const pd = g.pending!;
+    const pd = this.myPending!;
     if (pd.type === 'cell') {
       return `<div class="sx-banner"><span>Touchez la case du plateau à améliorer avec :</span>${miniCell(pd.cell)}
         <button class="sx-btn small" data-a="skip">Renoncer</button></div>`;
@@ -619,7 +717,7 @@ export class Scralatro {
         <button class="sx-btn ghost" data-a="skip">Ne rien prendre</button></div></div>`;
     }
     const info = PROGRAMS[pd.id];
-    const pool = pd.fromReserve ? g.players[g.pendingFor].rack : pd.drawn;
+    const pool = pd.fromReserve ? g.players[this.me].rack : pd.drawn;
     const [min, max] = info.pick!;
     const letterGrid = pd.id === 'ecriture'
       ? `<div class="sx-letters">${[...AZ].map((l) => `<button class="tile ${this.progLetter === l ? 'selected' : ''}" data-a="prog-letter" data-l="${l}">${l}</button>`).join('')}</div>` : '';
@@ -690,8 +788,20 @@ export class Scralatro {
     }
     if (a === 'power') { const uid = Number(el!.dataset.uid); this.selPower = this.selPower === uid ? null : uid; return this.render(); }
     if (a === 'bag') return this.showBag();
+    if (a === 'tab-partner') { this.watch = true; this.peekItem = null; return this.render(); }
+    if (a === 'tab-mine') { this.watch = false; this.peekItem = null; return this.render(); }
+    if (a === 'peek') { const i = Number(el!.dataset.i); this.peekItem = this.peekItem === i ? null : i; return this.render(); }
     if (a === 'log') return this.showLog();
     if (a === 'close-modal') { this.root.querySelector('.sx-extra')?.remove(); return; }
+    // Coup préparé pendant le tour de l'autre (en ligne, comme au Scrabble) : on pose, déplace et reprend ses lettres.
+    if (this.canPrepare()) {
+      if (a === 'recall') { this.pend.clear(); return this.render(); }
+      if (a === 'shuffle') return this.shuffleRack();
+      const tile = target.closest<HTMLElement>('.tile[data-id]');
+      if (tile && !a) return void this.onTile(Number(tile.dataset.id));
+      const cell = target.closest<HTMLElement>('.sx-board .cell');
+      if (cell && this.sel !== null) return void this.placeAt(this.sel, Number(cell.dataset.r), Number(cell.dataset.c));
+    }
     if (this.busy || !this.canAct()) {
       if (a || target.closest('.sx-board .cell, .tile[data-id]')) this.say(this.net && !this.canAct() && g.phase !== 'over' ? 'Ce n’est pas à vous : patientez.' : this.status, this.statusBad);
       return;
@@ -700,11 +810,16 @@ export class Scralatro {
     if (a === 'sell' && this.selPower !== null) return this.sell();
     if (a === 'reserve') return this.reserve();
     // Magasin.
-    if (a === 'item') { this.selItem = Number(el!.dataset.i); return this.render(); }
+    if (a === 'item') {
+      this.selItem = Number(el!.dataset.i);
+      // En coopération en ligne, le partenaire voit l'article que l'on regarde.
+      if (this.partner >= 0) this.net!.send({ type: 'sx', op: { k: 'look', i: this.selItem } });
+      return this.render();
+    }
     if (a === 'buy' && this.selItem !== null) return this.buy(this.selItem);
     if (a === 'reroll') { this.selItem = null; return void this.act({ k: 'reroll' }); }
     if (a === 'leave') return this.leave();
-    if (a === 'offer' && g.pending?.type === 'choose') {
+    if (a === 'offer' && this.myPending?.type === 'choose') {
       this.progSel = []; this.progLetter = '';
       return void this.act({ k: 'offer', i: Number(el!.dataset.i) });
     }
@@ -712,9 +827,10 @@ export class Scralatro {
     if (a === 'prog-letter') { this.progLetter = el!.dataset.l!; return this.render(); }
     if (a === 'prog-ok') return this.runProgram();
     const progTile = target.closest<HTMLElement>('[data-prog]');
-    if (progTile && g.pending?.type === 'program') {
+    const prog = this.myPending;
+    if (progTile && prog?.type === 'program') {
       const id = Number(progTile.dataset.prog);
-      const max = PROGRAMS[g.pending.id].pick![1];
+      const max = PROGRAMS[prog.id].pick![1];
       const k = this.progSel.indexOf(id);
       if (k >= 0) this.progSel.splice(k, 1);
       else { if (this.progSel.length >= max) this.progSel.shift(); this.progSel.push(id); }
@@ -722,24 +838,26 @@ export class Scralatro {
     }
     // Plateau : pose d'une case achetée.
     const cell = target.closest<HTMLElement>('.sx-board .cell');
-    if (cell && g.pending?.type === 'cell') return void this.act({ k: 'cell', r: Number(cell.dataset.r), c: Number(cell.dataset.c) });
+    if (cell && this.myPending?.type === 'cell') return void this.act({ k: 'cell', r: Number(cell.dataset.r), c: Number(cell.dataset.c) });
     if (g.phase !== 'play') return;
     // Jeu.
     if (a === 'play') return void this.play();
     if (a === 'recall') { this.pend.clear(); return this.render(); }
-    if (a === 'shuffle') {
-      const free = this.rackOrder.filter((id) => !this.pend.has(id));
-      for (let i = free.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [free[i], free[j]] = [free[j], free[i]]; }
-      this.rackOrder = [...free, ...this.rackOrder.filter((id) => this.pend.has(id))];
-      this.deps.sound.shuffle();
-      return this.render();
-    }
+    if (a === 'shuffle') return this.shuffleRack();
     if (a === 'exch') { this.pend.clear(); this.exch = this.exch ? null : new Set(); this.say(this.exch ? 'Touchez les lettres à échanger.' : ''); return this.render(); }
     if (a === 'exch-ok') return void this.exchange();
     if (a === 'pass') return void this.pass();
     const tile = target.closest<HTMLElement>('.tile[data-id]');
     if (tile) return void this.onTile(Number(tile.dataset.id));
     if (cell && this.sel !== null) return void this.placeAt(this.sel, Number(cell.dataset.r), Number(cell.dataset.c));
+  }
+
+  private shuffleRack() {
+    const free = this.rackOrder.filter((id) => !this.pend.has(id));
+    for (let i = free.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [free[i], free[j]] = [free[j], free[i]]; }
+    this.rackOrder = [...free, ...this.rackOrder.filter((id) => this.pend.has(id))];
+    this.deps.sound.shuffle();
+    this.render();
   }
 
   private say(msg: string, bad = false) {
@@ -750,7 +868,7 @@ export class Scralatro {
   }
 
   private async onTile(id: number) {
-    if (this.busy) return;
+    if (this.busy && !this.canPrepare()) return;
     if (this.exch) {
       const t = this.g!.players[this.me].rack.find((x) => x.id === id);
       if (t?.l === '#') return this.say('Une tuile verrou ne peut pas être échangée.', true);
@@ -820,6 +938,13 @@ export class Scralatro {
     if (!out || !g) return;
     if (g.phase !== 'play') { out.innerHTML = ''; return; }
     if (this.exch) { out.innerHTML = '<span class="muted">Mode échange</span>'; return; }
+    const waiting = this.canPrepare();
+    const other = g.players.length > 1 ? esc(g.players[1 - this.me].name) : '';
+    if (!this.pend.size) this.preparedOk = false;
+    if (waiting && !this.pend.size) {
+      out.innerHTML = `<span class="muted">Au tour de ${other}… Vous pouvez préparer votre coup.</span>`;
+      return;
+    }
     if (!this.pend.size) {
       const p = g.players[this.me];
       const lv = lvlOf(g, this.me);
@@ -830,6 +955,7 @@ export class Scralatro {
     }
     const reqs = this.reqs();
     const geo = geometry(g, this.me, reqs);
+    this.preparedOk = geo.ok;
     if (!geo.ok) { out.innerHTML = `<span class="bad">${esc(geo.error)}</span>`; return; }
     out.innerHTML = `<span class="words">${geo.words.map((w) => w.word).join(' · ')}</span><span class="muted">…</span>`;
     const v = await validate(g, this.me, geo.words, this.deps.lex);
@@ -841,7 +967,7 @@ export class Scralatro {
     const res = previewScore(g, this.me, reqs, v.infos);
     const random = reqs.some((q) => { const t = g.players[this.me].rack.find((x) => x.id === q.id); return t?.font === 'casino'; })
       || v.infos.some((w) => w.cells.some(([r, c]) => g.board[r][c]?.font === 'casino'));
-    out.innerHTML = `<span class="words">${v.infos.map((w) => `${w.word}${w.via ? ` <small>(${esc(w.via)})</small>` : ''}`).join(' · ')}</span><span class="score">${random ? '≈ ' : ''}${res.score} pts</span>`;
+    out.innerHTML = `<span class="words">${v.infos.map((w) => `${w.word}${w.via ? ` <small>(${esc(w.via)})</small>` : ''}`).join(' · ')}</span><span class="score">${random ? '≈ ' : ''}${res.score} pts</span>${waiting ? '<span class="muted">coup préparé</span>' : ''}`;
   }
 
   // ---------- Jouer ----------
@@ -1032,7 +1158,7 @@ export class Scralatro {
     let drag: { id: number; x: number; y: number; ghost: HTMLElement | null; src: HTMLElement } | null = null;
     this.root.addEventListener('pointerdown', (e) => {
       const g = this.g;
-      if (!g || g.phase !== 'play' || this.busy || this.exch || g.pending || !this.canAct()) return;
+      if (!g || g.phase !== 'play' || this.exch || this.myPending || !((this.canAct() && !this.busy) || this.canPrepare())) return;
       const el = (e.target as HTMLElement).closest<HTMLElement>('.tile[data-id]');
       if (!el || !el.closest('.sx-rack, .sx-board')) return;
       drag = { id: Number(el.dataset.id), x: e.clientX, y: e.clientY, ghost: null, src: el };

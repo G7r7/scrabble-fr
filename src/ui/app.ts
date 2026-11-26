@@ -21,7 +21,7 @@ import { Notifier, bindInstall, notifSupported } from './notify';
 import { clearOds, loadOds, saveOds } from '../dict/store';
 import { normalizeWord } from '../dict/normalize.js';
 import { Scralatro, scralatroWasActive } from '../scralatro/ui';
-import { actor as sxActor } from '../scralatro/remote';
+import { mayAct as sxMayAct } from '../scralatro/remote';
 
 interface RackTile { id: number; letter: string }
 interface PendingTile extends RackTile { r: number; c: number; assigned: string }
@@ -905,7 +905,7 @@ export class App {
       if (st.phase === 'over') forgetGame(code);
       else rememberGame(code, {
         opp: theirs.name, scores: [mine.total, theirs.total], waiting: false,
-        myTurn: st.won || sxActor(st) === m.you, sx: st.mode === 'coop' ? 'coop' : 'compet',
+        myTurn: st.won || sxMayAct(st, m.you), sx: st.mode === 'coop' ? 'coop' : 'compet',
       });
       if (this.waiting) void this.notifier.show(`${theirs.name} a rejoint la partie`, 'SCRALATRO : la partie commence !', 'tour');
       this.waiting = false;

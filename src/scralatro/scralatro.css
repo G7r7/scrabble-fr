@@ -344,3 +344,15 @@ body.sx-on #app { display: none; }
 .sx-net .dot.on { background: #22c55e; box-shadow: 0 0 6px #22c55e; }
 .sx-net-turn { margin-left: auto; color: var(--sx-muted); }
 .sx-net-turn.mine { color: var(--sx-gold); font-weight: 700; }
+
+/* ---------- Achats en même temps (coopération en ligne) ---------- */
+.sx-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.sx-tabs button { padding: 8px 6px; border-radius: 10px; border: 1px solid var(--sx-line); background: rgba(0, 0, 0, 0.25); color: var(--sx-muted); font: 600 0.82rem Inter, sans-serif; cursor: pointer; }
+.sx-tabs button.on { background: var(--sx-panel); color: var(--sx-gold); border-color: var(--sx-gold); }
+.sx .sx-item { position: relative; }
+.sx-item.look { box-shadow: 0 0 0 3px #38bdf8, 0 0 14px rgba(56, 189, 248, 0.6); }
+.sx-eye { position: absolute; top: -8px; right: -6px; font-style: normal; font-size: 1.1rem; }
+.sx-shop.partner .sx-shop-head h2 { color: #7dd3fc; }
+.sx-pmini { display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; }
+.sx-pmini .sx-power { width: 52px; }
+.sx-offers.ro .sx-offer { cursor: default; }

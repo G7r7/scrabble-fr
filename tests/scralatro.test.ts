@@ -1,9 +1,10 @@
 import { describe, expect, test } from 'vitest';
 import {
   buy, endTurn, exchangeTiles, geometry, leaveShop, levelTarget, lvlOf, newScralatro, newTile, passTurn, placeCell,
-  resolveMove, runProgram, sellPower, startProgram, useReserve, validate, applyOffer, mergeCell, type Lex, type Req, type SGame, type STile,
+  resolveMove, runProgram, sellPower, startProgram, useReserve, validate, applyOffer, mergeCell, migrateScralatro, openShops, type Lex, type Req, type SGame, type STile,
 } from '../src/scralatro/engine';
-import { actor, applySxOp, parseSxOp, sxView } from '../src/scralatro/remote';
+import { actor, applySxOp, mayAct, parseSxOp, sxView } from '../src/scralatro/remote';
+import { POWER_IDS } from '../src/scralatro/data';
 import { Games } from '../server/games';
 import type { ServerMsg } from '../src/net/protocol';
 
@@ -127,14 +128,14 @@ describe('scralatro', () => {
     expect(p.money).toBe(100 - 4 + 2);
 
     applyOffer(g, 0, { kind: 'cell', cell: { t: 'MQ' } });
-    expect(g.pending?.type).toBe('cell');
+    expect(p.pending?.type).toBe('cell');
     placeCell(g, 0, 0, 1);
     expect(g.cells[0][1]).toMatchObject({ t: 'MQ' });
 
     const before = p.bag.length;
     startProgram(g, 0, 'poubelle', false);
-    expect(g.pending?.type).toBe('program');
-    const drawn = g.pending!.type === 'program' ? g.pending!.drawn : [];
+    expect(p.pending?.type).toBe('program');
+    const drawn = p.pending!.type === 'program' ? p.pending!.drawn : [];
     expect(drawn).toHaveLength(7);
     expect(runProgram(g, 0, [drawn[0].id, drawn[1].id]).ok).toBe(true);
     expect(p.bag.length).toBe(before - 2);
@@ -228,14 +229,72 @@ describe('scralatro : cases, actions, en ligne', () => {
     const last = () => sent.filter((s) => s.msg.type === 'sx').at(-1)!.msg as Extract<ServerMsg, { type: 'sx' }>;
     expect(last().state.mode).toBe('coop');
     expect(last().state.players.map((p) => p.name)).toEqual(['Ana', 'Bob']);
+    // Coopération en ligne : les deux magasins sont ouverts en même temps, chacun part quand il veut.
+    expect(last().state.together).toBe(true);
+    expect(last().state.players.every((p) => p.shop)).toBe(true);
     await games.message(a.room, 1, { type: 'sx', op: { k: 'leave' } });
+    expect(last().state.phase).toBe('shop');
+    await games.message(a.room, 1, { type: 'sx', op: { k: 'reroll' } });
     expect(sent.at(-1)).toMatchObject({ seat: 1, msg: { type: 'error' } });
     await games.message(a.room, 0, { type: 'sx', op: { k: 'leave' } });
-    await games.message(a.room, 1, { type: 'sx', op: { k: 'leave' } });
     expect(last().state.phase).toBe('play');
-    expect(last().ev).toMatchObject({ by: 1, k: 'leave' });
+    expect(last().ev).toMatchObject({ by: 0, k: 'leave' });
     expect(games.summary('SXA234', A)).toMatchObject({ found: true, opp: 'Bob', sx: 'coop', myTurn: true });
     await games.message(a.room, 1, { type: 'sx-restart' });
     expect(last().state.phase).toBe('shop');
+  });
+});
+
+describe('scralatro : achats en même temps en coopération en ligne', () => {
+  test('les deux magasins sont ouverts ensemble, sans pouvoir en double', async () => {
+    const g = newScralatro('coop', ['Ana', 'Bob']);
+    g.together = true;
+    openShops(g);
+    expect(g.players[0].shop && g.players[1].shop).toBeTruthy();
+    expect(mayAct(g, 0) && mayAct(g, 1)).toBe(true);
+    const powers = (i: number) => g.players[i].shop!.items.filter((x) => x.kind === 'power').map((x) => (x as { id: string }).id);
+    for (const id of powers(0)) expect(powers(1)).not.toContain(id);
+    // Chacun achète de son côté, paquets ouverts en même temps.
+    g.players[0].money = g.players[1].money = 50;
+    g.players[0].shop!.items[3] = { kind: 'pack', of: 'tile', size: 3, price: 4 };
+    g.players[1].shop!.items[3] = { kind: 'pack', of: 'cell', size: 3, price: 4 };
+    expect((await applySxOp(g, 0, { k: 'buy', i: 3 }, lex)).ok).toBe(true);
+    expect((await applySxOp(g, 1, { k: 'buy', i: 3 }, lex)).ok).toBe(true);
+    expect(g.players[0].pending?.type).toBe('choose');
+    expect(g.players[1].pending?.type).toBe('choose');
+    expect((await applySxOp(g, 1, { k: 'offer', i: 0 }, lex)).ok).toBe(true);
+    expect((await applySxOp(g, 1, { k: 'cell', r: 0, c: 0 }, lex)).ok).toBe(true);
+    expect((await applySxOp(g, 1, { k: 'look', i: 2 }, lex)).ok).toBe(true);
+    expect(g.players[1].shop!.look).toBe(2);
+    // Bob a fini ; Ana termine ensuite et le niveau commence.
+    await applySxOp(g, 1, { k: 'leave' }, lex);
+    expect(g.phase).toBe('shop');
+    expect(mayAct(g, 1)).toBe(false);
+    expect((await applySxOp(g, 1, { k: 'reroll' }, lex)).ok).toBe(false);
+    await applySxOp(g, 0, { k: 'skip' }, lex);
+    await applySxOp(g, 0, { k: 'leave' }, lex);
+    expect(g.phase).toBe('play');
+  });
+
+  test('pas assez de pouvoirs différents : chacun son tour', () => {
+    const g = newScralatro('coop', ['Ana', 'Bob']);
+    g.together = true;
+    g.players[0].powers = POWER_IDS.slice(0, POWER_IDS.length - 5).map((id, i) => ({ uid: 1000 + i, id, price: 4, n: 0 }));
+    openShops(g);
+    expect(g.players[1].shop).toBeUndefined();
+    expect(mayAct(g, 1)).toBe(false);
+  });
+
+  test('une partie d’une version précédente reprend (action en cours commune → par joueur)', () => {
+    const g = newScralatro('coop', ['Ana', 'Bob']) as SGame & { pending?: unknown; pendingFor?: number };
+    leaveShop(g);
+    g.pending = { type: 'cell', cell: { t: 'MQ' } };
+    g.pendingFor = 1;
+    g.together = true;
+    migrateScralatro(g);
+    expect(g.pending).toBeUndefined();
+    expect(g.players[1].pending).toMatchObject({ type: 'cell' });
+    expect(g.shopQueue).toEqual([1]);
+    expect(g.players[1].shop).toBeTruthy();
   });
 });

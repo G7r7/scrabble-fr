@@ -6,8 +6,8 @@ import { CLOSE, cleanName, type GameSummary, type ServerMsg } from '../src/net/p
 import { isThemeWord, themeOf, type ThemeId } from '../src/game/themes';
 import { DEFAULT_DICT, dictOf, type DictId } from '../src/game/dicts';
 import { CLOCK_MINUTES, DEFAULT_MINUTES, clockUpdate, nextTimeout, settleTime } from '../src/game/clock';
-import { newScralatro, type SGame } from '../src/scralatro/engine';
-import { actor, applySxOp, parseSxOp, sxView, type SxEvent } from '../src/scralatro/remote';
+import { migrateScralatro, newScralatro, openShops, type SGame } from '../src/scralatro/engine';
+import { applySxOp, mayAct, parseSxOp, sxView, type SxEvent } from '../src/scralatro/remote';
 
 export type SeatNo = 0 | 1;
 export interface Seat { token: string; name: string; left: boolean }
@@ -174,6 +174,8 @@ export class Games {
     const [a, b] = room.seats;
     if (room.sxMode) {
       room.sx = newScralatro(room.sxMode, [a.name, b!.name]);
+      // Coopération en ligne : les deux joueurs font leurs achats en même temps.
+      if (room.sxMode === 'coop') { room.sx.together = true; openShops(room.sx); }
       room.state = null;
       room.updated = this.now();
       this.io.changed();
@@ -223,7 +225,7 @@ export class Games {
     if (g) {
       return {
         code: c, found: true, opp: g.players[opp].name, scores: [g.players[me].total, g.players[opp].total],
-        myTurn: g.phase !== 'over' && (g.won || actor(g) === me), over: g.phase === 'over', sx: g.mode === 'coop' ? 'coop' : 'compet',
+        myTurn: g.phase !== 'over' && (g.won || mayAct(g, me)), over: g.phase === 'over', sx: g.mode === 'coop' ? 'coop' : 'compet',
       };
     }
     const st = room.state;
@@ -253,6 +255,8 @@ export class Games {
       if (!r || !isCode(r.code) || !r.seats?.[0]) continue;
       // Les pendules ne tournent pas pendant que le serveur est arrêté.
       if (r.state?.clock) r.state.clock.since = now;
+      // Partie SCRALATRO d'une version précédente : mise à jour (achats en même temps en coopération).
+      if (r.sx) { if (r.sx.mode === 'coop') r.sx.together = true; migrateScralatro(r.sx); }
       this.rooms.set(r.code, r);
       this.arm(r);
     }
