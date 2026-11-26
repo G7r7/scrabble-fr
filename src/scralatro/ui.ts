@@ -15,7 +15,7 @@ import {
   type Cell, type Lex, type MoveResult, type Offer, type PowerInst, type Req, type SGame, type STile, type ShopItem,
   type TurnEnd,
 } from './engine';
-import { actor, applySxOp, mayAct, type SxEvent, type SxOp } from './remote';
+import { SX_VERSION, actor, applySxOp, mayAct, type SxEvent, type SxOp } from './remote';
 import type { ClientMsg, ServerMsg } from '../net/protocol';
 
 /** Jeu en ligne : l'appli crée la partie sur le serveur (avec son écran d'attente) et gère la connexion. */
@@ -118,6 +118,8 @@ export class Scralatro {
   private net: { send: (m: ClientMsg) => void; code: string } | null = null;
   private seat: 0 | 1 = 0;
   private peer = false;
+  /** Le serveur fait tourner une version plus récente que cette page : il faut la recharger. */
+  private outdated = false;
   /** Évènements reçus en cours d'affichage (décompte d'un coup), joués dans l'ordre. */
   private shows: Promise<void> = Promise.resolve();
 
@@ -207,6 +209,7 @@ export class Scralatro {
     if (this.g) this.render(); else this.menu();
   }
   onServer(m: Extract<ServerMsg, { type: 'sx' }>) {
+    this.outdated = (m.v ?? 0) > SX_VERSION;
     const prev = this.g;
     const fresh = !prev || (prev.phase === 'over' && m.state.phase !== 'over') || m.state.log.length < prev.log.length;
     this.seat = m.you;
@@ -442,7 +445,9 @@ export class Scralatro {
         ? (mayAct(g, 1 - this.seat) ? 'Achats en même temps' : 'À vous : magasin')
         : `${esc(other.name)} fait ses achats…`)
       : a === this.seat ? (this.myPending ? 'À vous de choisir' : 'À vous de jouer') : `Au tour de ${esc(other.name)}…`;
-    return `<div class="sx-net"><span class="dot ${this.peer ? 'on' : ''}" title="${this.peer ? 'Connecté' : 'Hors ligne'}"></span>
+    const update = this.outdated ? `<div class="sx-update"><span>Nouvelle version du jeu : rechargez la page pour continuer à jouer correctement.</span>
+      <button class="sx-btn small gold" data-a="reload">Recharger</button></div>` : '';
+    return `${update}<div class="sx-net"><span class="dot ${this.peer ? 'on' : ''}" title="${this.peer ? 'Connecté' : 'Hors ligne'}"></span>
       <span>En ligne · <b>${esc(this.net.code)}</b> · ${esc(other.name)}</span><span class="sx-net-turn ${a === this.seat ? 'mine' : ''}">${what}</span></div>`;
   }
 
@@ -802,6 +807,7 @@ export class Scralatro {
       return this.say(lv.special ? `${SPECIALS[lv.special].letter} ${SPECIALS[lv.special].name} : ${SPECIALS[lv.special].desc}` : `Niveau ${lv.n} : ${lv.target} points à atteindre.`);
     }
     if (a === 'power') { const uid = Number(el!.dataset.uid); this.selPower = this.selPower === uid ? null : uid; return this.render(); }
+    if (a === 'reload') { location.reload(); return; }
     if (a === 'bag') return this.showBag();
     if (a === 'opower') {
       const x = g.players[1 - this.me]?.powers.find((y) => y.uid === Number(el!.dataset.uid));

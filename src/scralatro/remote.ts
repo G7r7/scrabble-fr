@@ -7,6 +7,12 @@ import {
   type Lex, type MoveResult, type Req, type SGame, type TurnEnd,
 } from './engine';
 
+/**
+ * Version des règles et des messages en ligne : à augmenter quand le serveur change de comportement.
+ * Le serveur l'envoie avec chaque état ; une page plus ancienne propose alors de se recharger.
+ */
+export const SX_VERSION = 2;
+
 export type SxOp =
   | { k: 'play'; reqs: Req[]; crypto?: number | null }
   | { k: 'pass' }

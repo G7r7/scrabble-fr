@@ -7,7 +7,7 @@ import { isThemeWord, themeOf, type ThemeId } from '../src/game/themes';
 import { DEFAULT_DICT, dictOf, type DictId } from '../src/game/dicts';
 import { CLOCK_MINUTES, DEFAULT_MINUTES, clockUpdate, nextTimeout, settleTime } from '../src/game/clock';
 import { migrateScralatro, newScralatro, openShops, type SGame } from '../src/scralatro/engine';
-import { applySxOp, mayAct, parseSxOp, sxView, type SxEvent } from '../src/scralatro/remote';
+import { SX_VERSION, applySxOp, mayAct, parseSxOp, sxView, type SxEvent } from '../src/scralatro/remote';
 
 export type SeatNo = 0 | 1;
 export interface Seat { token: string; name: string; left: boolean }
@@ -209,7 +209,7 @@ export class Games {
   }
 
   private sendState(room: Room, seat: SeatNo, ev?: SxEvent) {
-    if (room.sx) return this.io.send(room, seat, { type: 'sx', state: sxView(room.sx, seat), you: seat, ...(ev ? { ev } : {}) });
+    if (room.sx) return this.io.send(room, seat, { type: 'sx', state: sxView(room.sx, seat), you: seat, v: SX_VERSION, ...(ev ? { ev } : {}) });
     if (room.state) this.io.send(room, seat, { type: 'state', state: viewFor(room.state, seat), you: seat, now: this.now() });
   }
   private broadcast(room: Room, ev?: SxEvent) { this.sendState(room, 0, ev); this.sendState(room, 1, ev); }

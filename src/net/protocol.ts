@@ -33,7 +33,7 @@ export type ServerMsg =
   | { type: 'state'; state: GameState; you: 0 | 1; now: number }
   | { type: 'error'; message: string }
   /** SCRALATRO : état de la partie (vue du joueur) et dernière action. */
-  | { type: 'sx'; state: SGame; you: 0 | 1; ev?: SxEvent }
+  | { type: 'sx'; state: SGame; you: 0 | 1; ev?: SxEvent; v?: number }
   /** L'adversaire a quitté la partie. */
   | { type: 'left' }
   /** Présence de l'adversaire (connecté ou non). */
