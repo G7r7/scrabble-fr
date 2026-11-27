@@ -533,10 +533,16 @@ export async function validate(g: SGame, pi: number, words: WordRef[], lex: Lex)
 }
 
 // ---------- Score d'un coup ----------
-export interface Line { text: string; cls?: 'word' | 'mult' | 'add' | 'bad' | 'money' | 'total' | 'info' }
+/** `v` : total du tour après cette ligne (pour l'animation du décompte). */
+export interface Line { text: string; cls?: 'word' | 'mult' | 'add' | 'bad' | 'money' | 'total' | 'info'; v?: number }
+/**
+ * Étape du calcul d'un mot, pour l'animation : texte, case concernée, points et multiplicateur courants
+ * (puis score du mot une fois les pouvoirs du mot appliqués).
+ */
+export interface Step { text: string; cell?: [number, number]; sum: number; mult: number; score?: number }
 export interface MoveResult {
   score: number; lines: Line[];
-  words: { word: string; score: number; cells: [number, number][] }[];
+  words: { word: string; score: number; cells: [number, number][]; steps?: Step[] }[];
   placed: [number, number][]; bingo: boolean;
 }
 const fmt = (x: number) => (Math.round(x * 100) / 100).toLocaleString('fr-FR');
@@ -615,11 +621,20 @@ export function resolveMove(g: SGame, pi: number, reqs: Req[], infos: WordInfo[]
     const letters = tiles.map(letterOf);
     let sum = 0, mult = 1, after = 0;
     const notes: string[] = [];
+    const steps: Step[] = [];
+    let at: [number, number] | undefined;
+    const r2 = (x: number) => Math.round(x * 100) / 100;
+    const note = (x: string, sc?: number) => {
+      notes.push(x);
+      steps.push({ text: x, ...(at ? { cell: at } : {}), sum: r2(sum), mult: r2(mult), ...(sc !== undefined ? { score: r2(sc) } : {}) });
+    };
     const onlyOf = (set: string) => letters.every((l) => set.includes(l));
     const letterAdd = (hasP('beatboxer') && onlyOf('PTKQCSZ') ? 10 : 0) + (hasP('scatman') && onlyOf('SKDBPAIOUY') ? 10 : 0)
       + (hasP('magicien') && onlyOf('ABCDR') ? 15 : 0) + (hasP('bleu') && onlyOf('ABDE') ? 15 : 0);
     tiles.forEach((t, k) => {
       const [r, c] = w.cells[k];
+      at = [r, c];
+      const m0 = mult;
       const fresh = isNew(r, c);
       const l = letters[k];
       let v = tileValue(g, t);
@@ -642,22 +657,24 @@ export function resolveMove(g: SGame, pi: number, reqs: Req[], infos: WordInfo[]
         if (cell.x === 'terre' && isConsonant(l)) mult *= 1.5;
       }
       sum += v;
+      steps.push({ text: `${l === '?' ? '★' : l} +${fmt(v)}${mult !== m0 ? ` · ×${fmt(mult / m0)}` : ''}`, cell: [r, c], sum: r2(sum), mult: r2(mult) });
       if (!fxOn(g, pi, t)) return;
       for (let a = 0; a < acts(t); a++) {
-        if (t.tex === 'bronze') { sum += w.word.length; notes.push(`🥉+${w.word.length}`); }
-        if (t.tex === 'argent') { mult *= 1.5; notes.push('🥈×1,5'); }
-        if (t.tex === 'or') { mult *= 2; notes.push('🥇×2'); }
-        if (t.tex === 'papier') { mult *= 2; notes.push('📄×2'); }
-        if (t.tex === 'verre') { sum += 10; notes.push('🥃+10'); if (fresh) glassChecks.push(t); }
+        if (t.tex === 'bronze') { sum += w.word.length; note(`🥉+${w.word.length}`); }
+        if (t.tex === 'argent') { mult *= 1.5; note('🥈×1,5'); }
+        if (t.tex === 'or') { mult *= 2; note('🥇×2'); }
+        if (t.tex === 'papier') { mult *= 2; note('📄×2'); }
+        if (t.tex === 'verre') { sum += 10; note('🥃+10'); if (fresh) glassChecks.push(t); }
         if (t.font === 'casino' && !prev) {
-          if (chance(0.5)) { mult *= 2; casinoWins.n++; notes.push('🎰×2'); } else { after -= 5; notes.push('🎰−5'); }
+          if (chance(0.5)) { mult *= 2; casinoWins.n++; note('🎰×2'); } else { after -= 5; note('🎰−5'); }
         }
-        if (t.font === 'calli' && k === 0) { mult *= 2; notes.push('✒️×2'); }
+        if (t.font === 'calli' && k === 0) { mult *= 2; note('✒️×2'); }
         if (t.pas.includes('jaune')) money += 3;
       }
     });
-    if (tiles.every((t) => t.sty.includes('gras'))) { mult *= 2; notes.push('𝐁×2'); }
-    if (tiles.every((t) => t.sty.includes('italique'))) { sum += 10; notes.push('𝐼+10'); }
+    at = undefined;
+    if (tiles.every((t) => t.sty.includes('gras'))) { mult *= 2; note('𝐁×2'); }
+    if (tiles.every((t) => t.sty.includes('italique'))) { sum += 10; note('𝐼+10'); }
     let score = sum * mult + after;
     // Pouvoirs liés au mot, dans l'ordre de la liste.
     const vals = new Set(tiles.map((t) => tileValue(g, t)));
@@ -694,32 +711,32 @@ export function resolveMove(g: SGame, pi: number, reqs: Req[], infos: WordInfo[]
         case 'perroquet': if (wordsBefore.has(w.word)) m = 3; break;
         default: break;
       }
-      if (m !== 1) { score *= m; notes.push(`${POWERS[x.id].icon}×${m}`); }
+      if (m !== 1) { score *= m; note(`${POWERS[x.id].icon}×${m}`, score); }
     }
-    if (tiles.every((t) => t.sty.includes('souligne'))) { score *= 2; notes.push('U̲ rejoue'); }
-    if (sp === 'epsilon' && len < 4) { score = 0; notes.push('Ε : 0'); }
-    wordScores.push({ word: w.word, score, cells: w.cells });
+    if (tiles.every((t) => t.sty.includes('souligne'))) { score *= 2; note('U̲ rejoue', score); }
+    if (sp === 'epsilon' && len < 4) { score = 0; note('Ε : 0', score); }
+    wordScores.push({ word: w.word, score, cells: w.cells, steps });
     lines.push({ text: `${w.word}${w.via ? ` (${w.via})` : ''} : ${fmt(sum)}${mult !== 1 ? ` × ${fmt(mult)}` : ''}${after ? ` ${after}` : ''}${notes.length ? `  ${notes.join(' ')}` : ''} = ${fmt(score)}`, cls: 'word' });
   }
 
   // Tour : somme des mots, scrabble, pierre, puis pouvoirs dans l'ordre.
   let total = wordScores.reduce((s, w) => s + w.score, 0);
   const bingo = reqs.length >= (hasP('tricheur') ? 6 : 7);
-  if (bingo) { total += 50; lines.push({ text: 'Scrabble ! +50', cls: 'add' }); }
+  if (bingo) { total += 50; lines.push({ text: 'Scrabble ! +50', cls: 'add', v: total }); }
   for (const t of p.rack) {
-    if (t.tex === 'pierre' && fxOn(g, pi, t)) for (let a = 0; a < acts(t); a++) { total *= 1.5; lines.push({ text: `🪨 ${letterOf(t)} en pierre sur le chevalet : ×1,5`, cls: 'mult' }); }
+    if (t.tex === 'pierre' && fxOn(g, pi, t)) for (let a = 0; a < acts(t); a++) { total *= 1.5; lines.push({ text: `🪨 ${letterOf(t)} en pierre sur le chevalet : ×1,5`, cls: 'mult', v: total }); }
   }
   const nWords = wordScores.length;
   const two = wordScores.filter((w) => w.word.length === 2).length;
   const turnMult = (x: PowerInst, m: number) => {
     if (m === 1) return;
     total *= m;
-    lines.push({ text: `${POWERS[x.id].icon} ${POWERS[x.id].name} : ×${fmt(m)}`, cls: 'mult' });
+    lines.push({ text: `${POWERS[x.id].icon} ${POWERS[x.id].name} : ×${fmt(m)}`, cls: 'mult', v: total });
   };
   const turnAdd = (x: PowerInst, a: number) => {
     if (!a) return;
     total += a;
-    lines.push({ text: `${POWERS[x.id].icon} ${POWERS[x.id].name} : +${fmt(a)}`, cls: 'add' });
+    lines.push({ text: `${POWERS[x.id].icon} ${POWERS[x.id].name} : +${fmt(a)}`, cls: 'add', v: total });
   };
   const playedCount = reqs.length;
   for (const x of pw) {
@@ -764,7 +781,7 @@ export function resolveMove(g: SGame, pi: number, reqs: Req[], infos: WordInfo[]
   }
   if ((sp === 'sigma' && two === 0) || (sp === 'khi' && nWords < 2)) {
     total = 0;
-    lines.push({ text: `${SPECIALS[sp].letter} ${SPECIALS[sp].name} : ce tour ne rapporte rien`, cls: 'bad' });
+    lines.push({ text: `${SPECIALS[sp].letter} ${SPECIALS[sp].name} : ce tour ne rapporte rien`, cls: 'bad', v: 0 });
   }
   const score = Math.floor(total);
 

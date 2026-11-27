@@ -118,6 +118,8 @@ export class Scralatro {
   private net: { send: (m: ClientMsg) => void; code: string } | null = null;
   private seat: 0 | 1 = 0;
   private peer = false;
+  /** Pendant le décompte d'un coup : plateau tel qu'il était juste après le coup (le niveau a pu se terminer depuis). */
+  private snap: { by: 0 | 1; s: NonNullable<SxEvent['snap']> } | null = null;
   /** Le serveur fait tourner une version plus récente que cette page : il faut la recharger. */
   private outdated = false;
   /** Évènements reçus en cours d'affichage (décompte d'un coup), joués dans l'ordre. */
@@ -219,6 +221,7 @@ export class Scralatro {
     if (ev?.by === this.seat) this.busy = false;
     if (!ev) return this.render();
     const turnBefore = prev ? actor(prev) === this.seat : false;
+    if (ev.k === 'play' && ev.snap) this.snap = { by: ev.by, s: ev.snap };
     if (ev.by === this.seat) this.pend.clear();
     else if (this.pend.size) {
       // Coup préparé : les lettres restent posées si leurs cases sont encore libres et le placement toujours jouable.
@@ -281,7 +284,6 @@ export class Scralatro {
     const r = await applySxOp(g, op.k === 'abandon' ? this.me : actor(g), op, this.deps.lex);
     if (!r.ok) { this.deps.sound.invalid(); this.say(r.error, true); this.render(); return false; }
     this.save();
-    if (op.k === 'play') { this.render(); }
     await this.present(r.ev);
     if (this.g === g) this.render();
     return true;
@@ -295,8 +297,13 @@ export class Scralatro {
     switch (ev.k) {
       case 'play':
         this.say('');
+        if (ev.snap) this.snap = { by: ev.by, s: ev.snap };
+        this.render();
         this.deps.sound.tiles(ev.res?.placed.length ?? 1, 60);
-        if (ev.res && ev.end) { await this.showBreakdown(ev.res, ev.end); await this.afterTurn(ev.end); }
+        try {
+          if (ev.res && ev.end) await this.showBreakdown(ev.res, ev.end);
+        } finally { this.snap = null; }
+        if (ev.end) { if (ev.end.levelDone || ev.end.over) this.render(); await this.afterTurn(ev.end); }
         return;
       case 'pass': case 'exchange': {
         if (ev.k === 'exchange') this.deps.sound.shuffle(); else this.deps.sound.soft();
@@ -369,12 +376,13 @@ export class Scralatro {
   /** Joueur dont on affiche le chevalet et les pouvoirs. */
   private get me(): 0 | 1 {
     if (this.net) return this.seat;
+    if (this.snap) return this.snap.by;
     return actor(this.g!);
   }
   /** À deux sur un appareil : écran de passage avant de dévoiler un chevalet. */
   private needHandoff(): boolean {
     const g = this.g!;
-    if (this.net || g.players.length < 2 || g.phase === 'over') return false;
+    if (this.net || this.snap || g.players.length < 2 || g.phase === 'over') return false;
     return this.shownPlayer !== this.me;
   }
 
@@ -384,7 +392,14 @@ export class Scralatro {
     if (!g) return this.menu();
     // Les fenêtres ouvertes par-dessus (sac, journal, choix d'une lettre) survivent aux mises à jour reçues en ligne.
     const extras = [...this.root.querySelectorAll<HTMLElement>(':scope > .sx-extra, :scope > .sx-count')];
-    this.renderMain();
+    if (this.snap) {
+      // Décompte en cours : on montre le plateau du coup, sans magasin ni fin de partie par-dessus.
+      const real = g;
+      const { s, by } = this.snap;
+      const players = real.mode === 'compet' ? real.players.map((p, i) => (i === by ? { ...p, lvl: s.lvl } : p)) : real.players;
+      this.g = { ...real, board: s.board, cells: s.cells, players, phase: 'play', won: false, lvl: real.mode === 'compet' ? real.lvl : s.lvl };
+      try { this.renderMain(); } finally { this.g = real; }
+    } else this.renderMain();
     for (const x of extras) this.root.appendChild(x);
   }
   private renderMain() {
@@ -1065,33 +1080,92 @@ export class Scralatro {
     });
   }
 
-  /** Décompte du coup : lignes de calcul une à une, puis le total. */
+  /**
+   * Décompte du coup, un effet après l'autre : chaque lettre puis chaque bonus s'allume sur le plateau
+   * et le compteur « points × multiplicateur » avance ; ensuite les pouvoirs du tour, un par un ; enfin le total.
+   * Toucher le panneau accélère (sans tout sauter d'un coup).
+   */
   private async showBreakdown(res: MoveResult, end: TurnEnd) {
     const reduced = matchMedia('(prefers-reduced-motion: reduce)').matches;
     const box = document.createElement('div');
     box.className = 'sx-count';
-    box.innerHTML = '<ul></ul><div class="sx-count-total"></div>';
+    box.innerHTML = `<div class="sx-meter"><span class="sx-word"></span><span class="sx-chips">0</span><b>×</b><span class="sx-mult">1</span></div>
+      <ul></ul><div class="sx-count-total">0</div>`;
     this.root.appendChild(box);
-    let skip = false;
-    box.addEventListener('click', () => { skip = true; });
+    let fast = reduced;
+    box.addEventListener('click', () => { fast = true; });
+    const wait = (ms: number) => delay(fast ? Math.min(ms, 60) : ms);
     const ul = box.querySelector('ul')!;
-    const lines = [...res.lines.filter((l) => l.cls !== 'total'), ...end.lines.map((text) => ({ text, cls: 'info' as const }))];
-    for (let i = 0; i < lines.length; i++) {
-      const li = document.createElement('li');
-      li.className = lines[i].cls ?? '';
-      li.textContent = lines[i].text;
-      ul.appendChild(li);
-      if (!skip && !reduced) { this.deps.sound.tick(i); await delay(lines[i].cls === 'word' ? 380 : 260); }
-    }
+    const word = box.querySelector<HTMLElement>('.sx-word')!;
+    const chips = box.querySelector<HTMLElement>('.sx-chips')!;
+    const mult = box.querySelector<HTMLElement>('.sx-mult')!;
     const tot = box.querySelector<HTMLElement>('.sx-count-total')!;
+    const fmtN = (x: number) => (Math.round(x * 100) / 100).toLocaleString('fr-FR');
+    const pop = (el: HTMLElement) => { el.classList.remove('pop'); void el.offsetWidth; el.classList.add('pop'); };
+    const addLine = (text: string, cls = '') => {
+      const li = document.createElement('li');
+      li.className = cls;
+      li.textContent = text;
+      ul.appendChild(li);
+      li.scrollIntoView({ block: 'nearest' });
+    };
+    const cellEl = (rc?: [number, number]) => rc ? this.root.querySelector<HTMLElement>(`.sx-board .cell[data-r="${rc[0]}"][data-c="${rc[1]}"]`) : null;
+    let tick = 0;
+    let running = 0;
+    const words = [...res.words];
+    for (const line of [...res.lines.filter((l) => l.cls !== 'total'), ...end.lines.map((text) => ({ text, cls: 'info' as const, v: undefined }))]) {
+      if (line.cls === 'word') {
+        const w = words.shift();
+        if (w?.steps?.length) {
+          word.textContent = w.word;
+          box.classList.remove('scored');
+          for (const st of w.steps) {
+            const el = cellEl(st.cell);
+            if (el) { el.classList.remove('sx-hit'); void el.offsetWidth; el.classList.add('sx-hit'); }
+            if (el && !fast) this.deps.fx.float(st.text, el.getBoundingClientRect(), 'sx-step');
+            if (st.score !== undefined) {
+              box.classList.add('scored');
+              chips.textContent = fmtN(st.score); mult.textContent = '';
+              pop(chips);
+            } else {
+              const c0 = chips.textContent, m0 = mult.textContent;
+              chips.textContent = fmtN(st.sum); mult.textContent = fmtN(st.mult);
+              if (chips.textContent !== c0) pop(chips);
+              if (mult.textContent !== m0) pop(mult);
+            }
+            this.deps.sound.tick(tick++);
+            await wait(st.cell ? 420 : 520);
+          }
+          this.root.querySelectorAll('.sx-board .sx-hit').forEach((x) => x.classList.remove('sx-hit'));
+        }
+        running += w?.score ?? 0;
+        addLine(line.text, 'word');
+        tot.textContent = fmtN(Math.floor(running));
+        pop(tot);
+        this.deps.sound.tick(tick++);
+        await wait(650);
+        continue;
+      }
+      addLine(line.text, line.cls ?? '');
+      if (line.v !== undefined) {
+        running = line.v;
+        tot.textContent = fmtN(Math.floor(running));
+        pop(tot);
+        this.deps.sound.tick(tick++);
+        await wait(line.cls === 'mult' ? 700 : 550);
+      } else await wait(380);
+    }
+    word.textContent = 'Total';
+    box.classList.add('scored', 'done');
+    chips.textContent = ''; mult.textContent = '';
     const score = res.score + end.extra;
+    tot.textContent = end.extra ? `${res.score} ${end.extra > 0 ? '+' : '−'} ${Math.abs(end.extra)}` : `${res.score}`;
+    tot.classList.add('final');
+    pop(tot);
     if (res.bingo) this.deps.sound.bingo(); else this.deps.sound.total(score);
-    await new Promise<void>((done) => this.deps.fx.tween(0, res.score, skip || reduced ? 0 : 500, (v) => { tot.textContent = `${v}`; }, done));
-    if (end.extra) tot.textContent = `${res.score} ${end.extra > 0 ? '+' : '−'} ${Math.abs(end.extra)}`;
-    tot.classList.add('pop');
     const board = this.root.querySelector<HTMLElement>('.sx-board');
     if (board && res.score > 0) this.deps.fx.float(`+${res.score}`, board.getBoundingClientRect(), 'total big');
-    await Promise.race([delay(skip || reduced ? 500 : 1500), new Promise((r) => box.addEventListener('click', r, { once: true }))]);
+    await Promise.race([delay(fast ? 600 : 1600), new Promise((r) => box.addEventListener('click', r, { once: true }))]);
     box.remove();
   }
 

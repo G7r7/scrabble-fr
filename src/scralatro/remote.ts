@@ -4,14 +4,14 @@ import { SIZE } from '../game/constants';
 import {
   applyOffer, buy, checkAfterSale, migrateScralatro, shopping, continueAfterWin, endTurn, exchangeTiles, geometry, has, LAST_LEVEL, leaveShop,
   movePower, passTurn, placeCell, rerollShop, resolveMove, runProgram, sellPower, skipPending, useReserve, validate,
-  type Lex, type MoveResult, type Req, type SGame, type TurnEnd,
+  lvlOf, type Cell, type LevelState, type Lex, type MoveResult, type Req, type SGame, type STile, type TurnEnd,
 } from './engine';
 
 /**
  * Version des règles et des messages en ligne : à augmenter quand le serveur change de comportement.
  * Le serveur l'envoie avec chaque état ; une page plus ancienne propose alors de se recharger.
  */
-export const SX_VERSION = 3;
+export const SX_VERSION = 4;
 
 export type SxOp =
   | { k: 'play'; reqs: Req[]; crypto?: number | null }
@@ -42,6 +42,8 @@ export interface SxEvent {
   end?: TurnEnd;
   /** Échange : le tour continue (tuiles en bois). */
   goOn?: boolean;
+  /** Coup joué : plateau et niveau juste après le coup (avant la fin du niveau), pour l'animation du décompte. */
+  snap?: { board: (STile | null)[][]; cells: Cell[][]; lvl: LevelState };
 }
 export type SxResult = { ok: true; ev: SxEvent } | { ok: false; error: string };
 
@@ -132,9 +134,12 @@ export async function applySxOp(g: SGame, seat: 0 | 1, op: SxOp, lex: Lex): Prom
       if (!v.ok) return fail(`Mot${v.invalid.length > 1 ? 's' : ''} absent${v.invalid.length > 1 ? 's' : ''} du dictionnaire : ${v.invalid.join(', ')}`);
       const p = g.players[pi];
       const crypto = has(g, pi, 'cryptographe') && p.crypto === null && !p.played ? (op.crypto ?? 0) : null;
+      const before = lvlOf(g, pi).score;
       const res = resolveMove(g, pi, op.reqs, v.infos, { crypto, cancre: v.cancre });
+      // Le score du niveau affiché pendant le décompte est celui d'avant le coup : il monte à la fin.
+      const snap = { board: structuredClone(g.board), cells: structuredClone(g.cells), lvl: { ...structuredClone(lvlOf(g, pi)), score: before } };
       const end = await endTurn(g, pi, op.reqs.map((q) => q.id), lex);
-      return ev({ res, end });
+      return ev({ res, end, snap });
     }
     case 'pass': {
       if (!play) return fail('Ce n’est pas le moment de jouer.');
