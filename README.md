@@ -34,16 +34,6 @@ Scrabble en français, à jouer dans le navigateur contre l'ordinateur.
   - En fin de partie Challenge ou Compétition, les **mots maléfiques** (non valables, mais passés sans contestation)
     sont démasqués sur le plateau, avec les points qu'ils ont rapportés ; non contestés, ils restent acquis. Temps épuisé : le joueur passe systématiquement et son adversaire
     ne peut plus changer de lettres ; les deux épuisés : fin de partie. Refus de jeu après 3 « je passe » de chacun.
-- **SCRALATRO** (bouton dans « Nouvelle partie ») : un mode de deck-building sur le plateau du Scrabble. Chaque niveau
-  impose un score à atteindre en un nombre de coups limité (25 points en 3 coups au niveau 1, puis de plus en plus exigeant ;
-  un niveau spécial à lettre grecque tous les trois niveaux). Entre deux niveaux, le magasin vend des tuiles lettres spéciales
-  (textures, éditions, polices, pastilles, styles), des cases spéciales à poser sur le plateau, des tuiles pouvoir (7 au plus,
-  revendables à moitié prix), des programmes et des améliorations de lettre, à l'unité ou en paquets. Victoire au niveau 15,
-  puis niveaux sans fin si on le souhaite. Trois versions : **solo**, **coopératif** et **compétitif** ; à deux, on joue
-  **en ligne** (lien à envoyer, partie gardée et arbitrée par le serveur de jeu, comme le Scrabble en ligne) ou sur le même
-  appareil (écran de passage entre les tours). Le bouton ☰ ou la touche Échap ouvre le menu de partie : reprendre,
-  abandonner, recommencer dans le même mode ou choisir un autre mode. Code : `src/scralatro/` (moteur testé dans
-  `tests/scralatro.test.ts` ; `remote.ts` : actions des joueurs, partagées par l'appli et le serveur).
 - **Écran toujours allumé** tant que l'appli est affichée (Screen Wake Lock), pour que le téléphone ne se mette pas en veille pendant la réflexion.
 - Animations (pose des lettres, décompte mot par mot, compteur de points) et sons synthétisés, volume général réglable.
 - **Musique de fond** : le bouton musique passe de « coupée » à **jazz** (swing léger), puis à **classique**, et sa couleur

@@ -106,6 +106,18 @@ describe('serveur de jeu', () => {
     expect(copy.rooms.get('ABC234')?.state?.history).toHaveLength(1);
   });
 
+  test('anciennes parties SCRALATRO (mode parti dans son propre dépôt) : abandonnées au chargement', () => {
+    const copy = new Games({ send: () => {}, invalidWords: () => [], changed: () => {} });
+    const seats: Room['seats'] = [{ token: A, name: 'Ana', left: false }, { token: B, name: 'Bob', left: false }];
+    copy.load([
+      { code: 'SXA234', seats, variant: null, state: null, updated: 0, sxMode: 'coop', sx: { mode: 'coop' } },
+      { code: 'SXB234', seats, variant: null, state: null, updated: 0, sxMode: 'compet' },
+      { code: 'ABC234', seats, variant: null, state: null, updated: 0 },
+    ] as Room[]);
+    expect([...copy.rooms.keys()]).toEqual(['ABC234']);
+    expect(copy.summary('SXA234', A).found).toBe(false);
+  });
+
   test('départ des deux joueurs : partie supprimée ; expiration', async () => {
     const { games, sent, tick } = setup();
     const a = seatOf(games.join('ABC234', A, true));

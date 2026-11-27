@@ -20,8 +20,6 @@ import { ChallengeScene } from './challenge';
 import { Notifier, bindInstall, notifSupported } from './notify';
 import { clearOds, loadOds, saveOds } from '../dict/store';
 import { normalizeWord } from '../dict/normalize.js';
-import { Scralatro, scralatroWasActive } from '../scralatro/ui';
-import { mayAct as sxMayAct } from '../scralatro/remote';
 
 interface RackTile { id: number; letter: string }
 interface PendingTile extends RackTile { r: number; c: number; assigned: string }
@@ -42,7 +40,7 @@ const OPP_KEY = 'scrabble-fr-adversaire';
 const DICT_KEY = 'scrabble-fr-liste';
 /** Parties en ligne en cours sur cet appareil (« Mes parties en cours »). */
 const GAMES_KEY = 'scrabble-fr-parties';
-interface MyGame { code: string; opp?: string; scores?: [number, number]; myTurn?: boolean; waiting?: boolean; at: number; sx?: 'coop' | 'compet' }
+interface MyGame { code: string; opp?: string; scores?: [number, number]; myTurn?: boolean; waiting?: boolean; at: number }
 function loadMyGames(): MyGame[] {
   try {
     const l = JSON.parse(lsGet(GAMES_KEY) ?? '[]');
@@ -121,8 +119,6 @@ export class App {
   private shown: [number, number] | null = null; // scores affichés (pendant le défilement)
   private fxDone: Promise<void> = Promise.resolve();
   private notifier = new Notifier();
-  /** Mode SCRALATRO (créé à la première ouverture). */
-  private sx: Scralatro | null = null;
 
   private el = {} as Record<
     'board' | 'rack' | 'preview' | 'scores' | 'bag' | 'history' | 'actions' | 'dict' | 'status' |
@@ -162,7 +158,6 @@ export class App {
     this.syncRack();
     this.render();
     this.soloNext();
-    if (scralatroWasActive()) this.openScralatro();
 
     lsDel('scrabble-fr-hote'); // ancienne sauvegarde de l'hôte (avant le serveur de jeu)
     const params = new URLSearchParams(location.search);
@@ -873,7 +868,6 @@ export class App {
     const link: GameLink = new GameLink(code, token, !!create, {
       onOpen: () => link.send({ type: 'hello', name: this.myName(), ...(create ? { options: create } : {}) }),
       onPeer: (online) => {
-        if (this.sx?.onlineCode === code) return this.sx.onPeer(online);
         const was = this.oppConnected;
         this.oppConnected = online;
         if (this.mode !== 'online' || this.game.over || was === online) return this.render();
@@ -889,7 +883,6 @@ export class App {
         if (text === CODE_TAKEN && create && this.mode === 'solo') return this.createGame(create);
         // Partie disparue (expirée, quittée) ou place prise : on l'oublie.
         if (closeCode === 4004 || closeCode === 4003) { forgetGame(code); lsDel(`${TOKEN_KEY}${code}`); }
-        if (this.sx?.onlineCode === code) return this.sx.onNetError(text);
         if (fatal && this.mode === 'solo') { this.disconnect(); this.lobby('error', text); }
         else { this.busy = false; this.setStatus(text, true); this.render(); }
       },
@@ -899,23 +892,6 @@ export class App {
 
   private onServerMsg(m: ServerMsg) {
     if (!m || typeof m !== 'object' || !this.link) return;
-    const code = this.link.code;
-    if (m.type === 'sx') {
-      const st = m.state, mine = st.players[m.you], theirs = st.players[m.you === 0 ? 1 : 0];
-      if (st.phase === 'over') forgetGame(code);
-      else rememberGame(code, {
-        opp: theirs.name, scores: [mine.total, theirs.total], waiting: false,
-        myTurn: st.won || sxMayAct(st, m.you), sx: st.mode === 'coop' ? 'coop' : 'compet',
-      });
-      if (this.waiting) void this.notifier.show(`${theirs.name} a rejoint la partie`, 'SCRALATRO : la partie commence !', 'tour');
-      this.waiting = false;
-      this.closeLobby();
-      return this.openScralatroOnline(code, m);
-    }
-    if (this.sx?.onlineCode === code) {
-      if (m.type === 'error') return this.sx.onNetError(m.message);
-      if (m.type === 'left') { void this.notifier.show('Votre partenaire a quitté la partie', '', 'depart'); return this.sx.onLeft(); }
-    }
     if (m.type === 'waiting') {
       this.waiting = true;
       if (this.mode === 'solo') this.lobby('hosting', this.link.code, true);
@@ -1034,7 +1010,7 @@ export class App {
         const x = by.get(g.code);
         if (!x) continue;
         if (!x.found || x.over) { forgetGame(g.code); if (!x.found) lsDel(`${TOKEN_KEY}${g.code}`); continue; }
-        rememberGame(g.code, x.waiting ? { waiting: true } : { opp: x.opp, scores: x.scores, myTurn: x.myTurn, waiting: false, sx: x.sx });
+        rememberGame(g.code, x.waiting ? { waiting: true } : { opp: x.opp, scores: x.scores, myTurn: x.myTurn, waiting: false });
       }
     }
     this.renderGamesBar();
@@ -1053,8 +1029,7 @@ export class App {
     const sc = g.scores ? ` · ${g.scores[0]} – ${g.scores[1]}` : '';
     const turn = g.myTurn ? `<span class="your-turn">${short ? 'à vous !' : 'à vous de jouer'}</span>`
       : short ? 'son tour' : `au tour de ${esc(g.opp ?? 'l’adversaire')}`;
-    const sx = g.sx ? `<b>SCRALATRO</b> ${g.sx === 'coop' ? 'avec' : 'contre'} ` : short ? '' : 'contre ';
-    return `${sx}<b>${esc(g.opp ?? '?')}</b>${sc} · ${turn}`;
+    return `${short ? '' : 'contre '}<b>${esc(g.opp ?? '?')}</b>${sc} · ${turn}`;
   }
 
   /** Bandeau sous les scores (contre l'ordinateur) : rappelle les parties en ligne en cours. */
@@ -1111,8 +1086,6 @@ export class App {
       body.innerHTML = `
         <h2>Nouvelle partie</h2>
         <section id="olGames" class="my-games" hidden></section>
-        <button type="button" class="sx-entry" data-ol="scralatro"><b>SCRA<span>LATRO</span></b>
-          <small>Nouveau mode : objectifs de score, magasin et tuiles pouvoir. Solo, coopératif ou compétitif.</small></button>
         <section class="setup" data-opp="${opp}" data-variant="${variant}" aria-label="Nouvelle partie">
           <div class="setup-row"><span class="setup-label">Contre</span>${seg('olOpp',
             [{ id: 'solo', label: 'L’ordinateur' }, { id: 'online', label: 'En ligne' }], opp, 'Adversaire')}</div>
@@ -1232,7 +1205,6 @@ export class App {
         lsSet(DICT_KEY, dict);
         this.createGame({ variant, theme, dict, minutes });
       }
-      else if (a === 'scralatro') { this.closeLobby(); this.openScralatro(); }
       else if (a === 'lists') this.openLists();
       else if (a === 'close' || a === 'cancel') cancel();
       else if (a === 'menu') this.lobby('menu');
@@ -1284,38 +1256,6 @@ export class App {
         if (t.value === 'online') body.querySelector<HTMLInputElement>('#olName')?.focus();
       }
     });
-  }
-
-  // ---------- SCRALATRO ----------
-
-  /** Ouvre le mode SCRALATRO ; il vérifie ses mots avec la liste chargée dans le moteur. */
-  private openScralatro() {
-    this.sx ??= new Scralatro({
-      lex: { invalid: (words) => this.invalid(words) },
-      sound: this.sound, fx: this.fx,
-      onExit: () => this.render(),
-      net: {
-        // Partie en ligne : créée sur le serveur avec l'écran d'attente habituel (lien à envoyer).
-        host: (mode, name) => {
-          if (this.mode === 'online') this.toSolo();
-          lsSet('scrabble-fr-nom', cleanName(name) || this.myName());
-          const dict: DictId = dictOf(lsGet(DICT_KEY)) ?? 'libre';
-          this.createGame({ variant: null, dict, scralatro: mode });
-        },
-        close: (bye) => {
-          if (bye) this.leaveGame(); else this.disconnect();
-          setUrlCode(null);
-          void this.refreshMyGames();
-        },
-      },
-    });
-    this.sx.open();
-  }
-  /** Message du serveur pour une partie SCRALATRO en ligne : on l'affiche dans l'écran Scralatro. */
-  private openScralatroOnline(code: string, m: Extract<ServerMsg, { type: 'sx' }>) {
-    this.openScralatro();
-    if (this.sx!.onlineCode !== code) this.sx!.attach(code, (msg) => this.link?.send(msg), !!this.link?.peerOnline);
-    this.sx!.onServer(m);
   }
 
   // ---------- Listes de mots : explorateur ----------
@@ -1607,7 +1547,6 @@ export class App {
 
     document.addEventListener('keydown', (e) => {
       if ((e.target as HTMLElement).closest('input, select, textarea')) return;
-      if (document.body.classList.contains('sx-on')) return; // SCRALATRO a ses propres touches
       if (e.key === 'Enter') void this.play();
       else if (e.key === 'Escape') { this.recallAll(); this.exchangeMode = false; this.render(); }
     });

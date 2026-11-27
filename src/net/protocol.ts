@@ -5,14 +5,10 @@ import type { GameState, Variant } from '../game/game';
 import type { Action } from '../game/remote';
 import type { ThemeId } from '../game/themes';
 import type { DictId } from '../game/dicts';
-import type { SGame } from '../scralatro/engine';
-import type { SxEvent, SxOp } from '../scralatro/remote';
 
 /** Options choisies par la personne qui crée la partie. */
 export interface GameOptions {
   variant: Variant | null; theme?: ThemeId | null; dict?: DictId | null; minutes?: number;
-  /** Partie de SCRALATRO (coopérative ou compétitive) au lieu du Scrabble. */
-  scralatro?: 'coop' | 'compet';
 }
 
 export type ClientMsg =
@@ -20,9 +16,6 @@ export type ClientMsg =
   | { type: 'hello'; name: string; options?: GameOptions }
   | { type: 'action'; action: Action }
   | { type: 'rematch' }
-  /** SCRALATRO : action du joueur, ou nouvelle partie dans le même mode. */
-  | { type: 'sx'; op: SxOp }
-  | { type: 'sx-restart' }
   /** Le joueur quitte la partie pour de bon. */
   | { type: 'bye' };
 
@@ -32,8 +25,6 @@ export type ServerMsg =
   /** `now` : heure du serveur (ms), pour afficher la pendule du mode compétition. */
   | { type: 'state'; state: GameState; you: 0 | 1; now: number }
   | { type: 'error'; message: string }
-  /** SCRALATRO : état de la partie (vue du joueur) et dernière action. */
-  | { type: 'sx'; state: SGame; you: 0 | 1; ev?: SxEvent; v?: number }
   /** L'adversaire a quitté la partie. */
   | { type: 'left' }
   /** Présence de l'adversaire (connecté ou non). */
@@ -60,6 +51,4 @@ export interface GameSummary {
   /** À moi de jouer (ou de juger le coup proposé). */
   myTurn?: boolean;
   over?: boolean;
-  /** Partie de SCRALATRO. */
-  sx?: 'coop' | 'compet';
 }
