@@ -1260,9 +1260,11 @@ function startLevel(g: SGame): string[] {
   const out: string[] = [];
   g.players.forEach((_, i) => out.push(...refill(g, i)));
   g.phase = 'play';
-  g.cur = 0;
   const lv = g.lvl;
-  log(g, 0, `Niveau ${lv.n}${lv.special ? ` — ${SPECIALS[lv.special].letter} ${SPECIALS[lv.special].name}` : ''} : ${lv.target} points en ${lv.moves} coups.`, 'level');
+  // À deux, le joueur qui commence alterne d'un niveau à l'autre (niveau 1 : joueur 1, niveau 2 : joueur 2…).
+  g.cur = ((lv.n - 1) % g.players.length) as 0 | 1;
+  const first = g.players.length > 1 ? ` ${g.players[g.cur].name} commence.` : '';
+  log(g, g.cur, `Niveau ${lv.n}${lv.special ? ` — ${SPECIALS[lv.special].letter} ${SPECIALS[lv.special].name}` : ''} : ${lv.target} points en ${lv.moves} coups.${first}`, 'level');
   if (lv.special === 'upsilon' && g.players.some((p) => !p.powers.length)) {
     g.phase = 'over';
     g.overText = 'Upsilon : il faut une tuile pouvoir à vendre pour ce niveau. Partie perdue.';

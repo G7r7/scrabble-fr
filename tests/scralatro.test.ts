@@ -298,3 +298,17 @@ describe('scralatro : achats en même temps en coopération en ligne', () => {
     expect(g.players[1].shop).toBeTruthy();
   });
 });
+
+test('coopération : le joueur qui commence alterne d’un niveau à l’autre', async () => {
+  const g = newScralatro('coop', ['Ana', 'Bob']);
+  leaveShop(g); leaveShop(g);
+  expect(g.lvl.n).toBe(1);
+  expect(g.cur).toBe(0);
+  g.lvl.target = 1;
+  const t = rack(g, 0, 'CHAT');
+  await play(g, 0, row(t, 7, 4));
+  expect(g.phase).toBe('shop');
+  leaveShop(g); leaveShop(g);
+  expect(g.lvl.n).toBe(2);
+  expect(g.cur).toBe(1);
+});
